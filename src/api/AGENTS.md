@@ -12,7 +12,7 @@
 
 ## LOCAL CONTRACTS
 - Anthropic request size guard enforces 32 MB via `content-length` before body parsing.
-- Anthropic version acceptance is driven by config (`ANTHROPIC_SUPPORTED_VERSIONS`, default `2023-06-01`); missing header behavior is flag-controlled.
+- Anthropic version acceptance is driven by config (`ANTHROPIC_SUPPORTED_VERSIONS`, default `2024-10-22`); missing header behavior is flag-controlled.
 - Non-JSON content types for Anthropic routes are rejected.
 - Response headers must include both `request-id` and `x-request-id` on success and errors.
 - Streaming `/v1/messages` delegates SSE conversion to `convert_openai_streaming_to_claude_with_cancellation`.

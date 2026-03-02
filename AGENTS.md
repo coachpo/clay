@@ -61,7 +61,7 @@ clay/
 ## CONVENTIONS
 - Use `pyproject.toml` as the dependency source of truth (`python -m pip install .[dev]` for local quality checks).
 - Canonical runtime entrypoint is `clay` (`pyproject` script -> `src.main:main`); `start_proxy.sh` is compatibility-only.
-- Anthropic header validation is configurable (`ANTHROPIC_SUPPORTED_VERSIONS`, fallback/missing flags), defaulting to `2023-06-01`.
+- Anthropic header validation is configurable (`ANTHROPIC_SUPPORTED_VERSIONS`, fallback/missing flags), defaulting to `2024-10-22`.
 - Responses include both `request-id` and `x-request-id` headers on success and error paths.
 - Integration coverage is script-driven (`python tests/test_main.py`); pytest config exists in `pyproject.toml` but is not the primary flow.
 - CI quality gates run `isort`, `black`, `ruff`, `mypy`, and `compileall`; CI does not run live integration scripts.

@@ -36,7 +36,7 @@ BASE_URL = os.getenv("BASE_URL", "http://localhost:8000")
 CLIENT_API_KEY = os.getenv("ANTHROPIC_API_KEY", "test-key")
 
 ANTHROPIC_HEADERS = {
-    "anthropic-version": "2023-06-01",
+    "anthropic-version": config.anthropic_default_version,
     "x-api-key": CLIENT_API_KEY,
 }
 

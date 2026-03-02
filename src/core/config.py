@@ -42,7 +42,7 @@ class Config:
         self.middle_model = os.environ.get("MIDDLE_MODEL", self.big_model)
         self.small_model = os.environ.get("SMALL_MODEL", "gpt-4o-mini")
 
-        self.anthropic_default_version = os.environ.get("ANTHROPIC_DEFAULT_VERSION", "2023-06-01")
+        self.anthropic_default_version = os.environ.get("ANTHROPIC_DEFAULT_VERSION", "2024-10-22")
         supported_versions_raw = os.environ.get(
             "ANTHROPIC_SUPPORTED_VERSIONS", self.anthropic_default_version
         )
