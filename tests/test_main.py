@@ -7,11 +7,13 @@ import json
 import os
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Dict, List, Optional
 
 import httpx
 from dotenv import load_dotenv
 from fastapi import HTTPException
+from openai._exceptions import BadRequestError
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
@@ -24,6 +26,7 @@ from src.conversion.response_converter import (
     convert_openai_streaming_to_claude,
     convert_openai_to_claude_response,
 )
+from src.core.client import OpenAIClient
 from src.core.config import config
 from src.core.logging import logger
 from src.core.model_manager import model_manager
@@ -248,6 +251,16 @@ async def _require_provider_or_skip(test_name: str) -> bool:
     return False
 
 
+def _bad_request_error(message: str) -> BadRequestError:
+    request = httpx.Request("POST", "https://example.com/v1/responses")
+    response = httpx.Response(status_code=400, request=request)
+    return BadRequestError(
+        message=message,
+        response=response,
+        body={"error": {"message": message}},
+    )
+
+
 async def test_missing_anthropic_version_header() -> None:
     async with httpx.AsyncClient() as client:
         response = await client.post(
@@ -260,6 +273,180 @@ async def test_missing_anthropic_version_header() -> None:
             headers={"x-api-key": CLIENT_API_KEY},
         )
         _assert_anthropic_error_shape(response, expected_status=400)
+
+
+async def test_retries_without_metadata_on_unsupported_parameter_error() -> None:
+    client = OpenAIClient(api_key="sk-test", base_url="https://example.com")
+    calls: List[Dict[str, Any]] = []
+    sentinel = object()
+    unsupported_metadata_error = _bad_request_error("Unsupported parameter: metadata")
+
+    async def fake_create(**kwargs: Any) -> Any:
+        calls.append(dict(kwargs))
+        if len(calls) == 1:
+            raise unsupported_metadata_error
+        return sentinel
+
+    client.client = SimpleNamespace(responses=SimpleNamespace(create=fake_create))
+
+    request = {
+        "model": "gpt-4.1",
+        "input": [
+            {
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_text", "text": "hello"}],
+            }
+        ],
+        "metadata": {"user_id": "test-user"},
+    }
+
+    result = await client._create_with_metadata_fallback(request)
+    assert result is sentinel
+    assert len(calls) == 2
+    assert "metadata" in calls[0]
+    assert "metadata" not in calls[1]
+
+
+async def test_retries_without_context_management_on_unsupported_parameter_error() -> None:
+    client = OpenAIClient(api_key="sk-test", base_url="https://example.com")
+    calls: List[Dict[str, Any]] = []
+    sentinel = object()
+    unsupported_context_management_error = _bad_request_error(
+        "Unsupported parameter: context_management"
+    )
+
+    async def fake_create(**kwargs: Any) -> Any:
+        calls.append(dict(kwargs))
+        if len(calls) == 1:
+            raise unsupported_context_management_error
+        return sentinel
+
+    client.client = SimpleNamespace(responses=SimpleNamespace(create=fake_create))
+
+    request = {
+        "model": "gpt-4.1",
+        "input": [
+            {
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_text", "text": "hello"}],
+            }
+        ],
+        "context_management": [{"type": "compaction", "compact_threshold": 200000}],
+    }
+
+    result = await client._create_with_metadata_fallback(request)
+    assert result is sentinel
+    assert len(calls) == 2
+    assert "context_management" in calls[0]
+    assert "context_management" not in calls[1]
+
+
+async def test_retries_once_without_all_optional_fields_when_any_optional_field_is_rejected() -> (
+    None
+):
+    client = OpenAIClient(api_key="sk-test", base_url="https://example.com")
+    calls: List[Dict[str, Any]] = []
+    sentinel = object()
+    unsupported_metadata_error = _bad_request_error("Unsupported parameter: metadata")
+
+    async def fake_create(**kwargs: Any) -> Any:
+        calls.append(dict(kwargs))
+        if len(calls) == 1:
+            raise unsupported_metadata_error
+        return sentinel
+
+    client.client = SimpleNamespace(responses=SimpleNamespace(create=fake_create))
+
+    request = {
+        "model": "gpt-4.1",
+        "input": [
+            {
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_text", "text": "hello"}],
+            }
+        ],
+        "metadata": {"user_id": "test-user"},
+        "context_management": [{"type": "compaction", "compact_threshold": 200000}],
+    }
+
+    result = await client._create_with_metadata_fallback(request)
+    assert result is sentinel
+    assert len(calls) == 2
+    assert "metadata" in calls[0]
+    assert "context_management" in calls[0]
+    assert "metadata" not in calls[1]
+    assert "context_management" not in calls[1]
+
+
+async def test_does_not_retry_for_other_bad_request_errors() -> None:
+    client = OpenAIClient(api_key="sk-test", base_url="https://example.com")
+    calls: List[Dict[str, Any]] = []
+    unrelated_bad_request_error = _bad_request_error("Request body is invalid")
+
+    async def fake_create(**kwargs: Any) -> Any:
+        calls.append(dict(kwargs))
+        raise unrelated_bad_request_error
+
+    client.client = SimpleNamespace(responses=SimpleNamespace(create=fake_create))
+
+    request = {
+        "model": "gpt-4.1",
+        "input": [
+            {
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_text", "text": "hello"}],
+            }
+        ],
+        "metadata": {"user_id": "test-user"},
+    }
+
+    try:
+        await client._create_with_metadata_fallback(request)
+    except BadRequestError:
+        pass
+    else:
+        raise AssertionError("Expected BadRequestError for unrelated request validation errors")
+
+    assert len(calls) == 1
+
+
+async def test_lightweight_client_cancellation_for_non_stream_response() -> None:
+    client = OpenAIClient(api_key="sk-test", base_url="https://example.com")
+    request_id = "req_cancel_lightweight"
+
+    async def fake_create(**_: Any) -> Any:
+        await asyncio.sleep(10)
+        return SimpleNamespace(model_dump=lambda: {"id": "resp_should_not_complete"})
+
+    client.client = SimpleNamespace(responses=SimpleNamespace(create=fake_create))
+
+    request = {
+        "model": "gpt-4.1",
+        "input": [
+            {
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_text", "text": "hello"}],
+            }
+        ],
+    }
+
+    response_task = asyncio.create_task(client.create_response(request, request_id=request_id))
+    await asyncio.sleep(0.05)
+    assert client.cancel_request(request_id) is True
+
+    try:
+        await response_task
+    except HTTPException as error:
+        assert error.status_code == 499, error
+    else:
+        raise AssertionError("Expected HTTPException(499) for cancelled request")
+
+    assert request_id not in client.active_requests, client.active_requests
 
 
 async def test_unknown_fields_rejected_with_anthropic_error_shape() -> None:
@@ -1050,6 +1237,21 @@ async def main() -> None:
 
     await test_missing_anthropic_version_header()
     print("- missing anthropic-version header check passed")
+
+    await test_retries_without_metadata_on_unsupported_parameter_error()
+    print("- metadata fallback (metadata) retry check passed")
+
+    await test_retries_without_context_management_on_unsupported_parameter_error()
+    print("- metadata fallback (context_management) retry check passed")
+
+    await test_retries_once_without_all_optional_fields_when_any_optional_field_is_rejected()
+    print("- metadata fallback removes optional fields in single retry check passed")
+
+    await test_does_not_retry_for_other_bad_request_errors()
+    print("- metadata fallback does not retry unrelated bad requests check passed")
+
+    await test_lightweight_client_cancellation_for_non_stream_response()
+    print("- lightweight non-stream cancellation check passed")
 
     await test_unknown_fields_rejected_with_anthropic_error_shape()
     print("- unknown fields rejection shape check passed")
