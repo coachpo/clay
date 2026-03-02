@@ -20,17 +20,19 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 load_dotenv(PROJECT_ROOT / ".env")
 
-from src.api.endpoints import _is_supported_openai_model_id
-from src.conversion.request_converter import convert_claude_to_openai, parse_tool_result_content
-from src.conversion.response_converter import (
+import app.api.endpoints as api_endpoints
+from app.api.endpoints import _is_supported_openai_model_id
+from app.conversion.request_converter import convert_claude_to_openai, parse_tool_result_content
+from app.conversion.response_converter import (
     convert_openai_streaming_to_claude,
     convert_openai_to_claude_response,
 )
-from src.core.client import OpenAIClient
-from src.core.config import config
-from src.core.logging import logger
-from src.core.model_manager import model_manager
-from src.models.claude import parse_claude_messages_request
+from app.core.client import OpenAIClient
+from app.core.config import config
+from app.core.logging import logger
+from app.core.model_manager import model_manager
+from app.main import app
+from app.models.claude import parse_claude_messages_request
 
 BASE_URL = os.getenv("BASE_URL", "http://localhost:8000")
 CLIENT_API_KEY = os.getenv("ANTHROPIC_API_KEY", "test-key")
@@ -99,6 +101,45 @@ async def _post_messages(
     if headers:
         request_headers.update(headers)
     return await client.post(f"{BASE_URL}/v1/messages", json=payload, headers=request_headers)
+
+
+class _StubOpenAIClientForMessages:
+    def __init__(self) -> None:
+        self.last_request: Optional[Dict[str, Any]] = None
+
+    async def create_response(
+        self, responses_request: Dict[str, Any], request_id: Optional[str] = None
+    ) -> Dict[str, Any]:
+        self.last_request = dict(responses_request)
+        return {
+            "id": request_id or "resp_stub",
+            "output": [
+                {
+                    "type": "message",
+                    "id": "msg_stub",
+                    "content": [{"type": "output_text", "text": "stubbed"}],
+                }
+            ],
+            "usage": {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+        }
+
+    def cancel_request(self, _: str) -> bool:
+        return True
+
+    def classify_openai_error(self, message: str) -> str:
+        return message
+
+
+async def _post_messages_in_process(
+    payload: Dict[str, Any],
+    query_string: str = "",
+) -> httpx.Response:
+    transport = httpx.ASGITransport(app=app)
+    path = "/v1/messages"
+    if query_string:
+        path = f"{path}?{query_string}"
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+        return await client.post(path, json=payload, headers=ANTHROPIC_HEADERS)
 
 
 async def _post_count_tokens(
@@ -569,6 +610,107 @@ async def test_token_count_rejects_web_search_conflicting_domain_filters() -> No
         }
         response = await _post_count_tokens(client, payload)
         _assert_anthropic_error_shape(response, expected_status=400)
+
+
+async def test_messages_accepts_adaptive_thinking_for_claude_sonnet_4_6() -> None:
+    stub_client = _StubOpenAIClientForMessages()
+    original_client = api_endpoints.openai_client
+    api_endpoints.openai_client = stub_client
+    try:
+        response = await _post_messages_in_process(
+            {
+                "model": "claude-sonnet-4-6",
+                "max_tokens": 64,
+                "messages": [{"role": "user", "content": "Use adaptive thinking"}],
+                "thinking": {"type": "adaptive", "effort": "high"},
+            },
+            query_string="beta=true",
+        )
+    finally:
+        api_endpoints.openai_client = original_client
+
+    assert 200 <= response.status_code < 300, response.text
+    _assert_request_id_headers(response)
+    assert stub_client.last_request is not None
+    reasoning = stub_client.last_request.get("reasoning")
+    assert isinstance(reasoning, dict), stub_client.last_request
+    assert reasoning.get("effort") == "high", stub_client.last_request
+
+
+async def test_messages_accepts_adaptive_thinking_for_claude_opus_4_6() -> None:
+    stub_client = _StubOpenAIClientForMessages()
+    original_client = api_endpoints.openai_client
+    api_endpoints.openai_client = stub_client
+    try:
+        response = await _post_messages_in_process(
+            {
+                "model": "claude-opus-4-6",
+                "max_tokens": 64,
+                "messages": [{"role": "user", "content": "Use adaptive thinking"}],
+                "thinking": {"type": "adaptive"},
+            }
+        )
+    finally:
+        api_endpoints.openai_client = original_client
+
+    assert 200 <= response.status_code < 300, response.text
+    _assert_request_id_headers(response)
+    assert stub_client.last_request is not None
+    reasoning = stub_client.last_request.get("reasoning")
+    assert isinstance(reasoning, dict), stub_client.last_request
+    assert reasoning.get("effort") == "medium", stub_client.last_request
+
+
+async def test_messages_enabled_thinking_with_budget_tokens_still_works() -> None:
+    stub_client = _StubOpenAIClientForMessages()
+    original_client = api_endpoints.openai_client
+    api_endpoints.openai_client = stub_client
+    try:
+        response = await _post_messages_in_process(
+            {
+                "model": "claude-3-5-sonnet",
+                "max_tokens": 64,
+                "messages": [{"role": "user", "content": "Use classic thinking"}],
+                "thinking": {"type": "enabled", "budget_tokens": 8192},
+            }
+        )
+    finally:
+        api_endpoints.openai_client = original_client
+
+    assert 200 <= response.status_code < 300, response.text
+    _assert_request_id_headers(response)
+    assert stub_client.last_request is not None
+    reasoning = stub_client.last_request.get("reasoning")
+    assert isinstance(reasoning, dict), stub_client.last_request
+    assert reasoning.get("effort") == "high", stub_client.last_request
+
+
+async def test_messages_rejects_adaptive_thinking_for_older_models() -> None:
+    response = await _post_messages_in_process(
+        {
+            "model": "claude-3-5-sonnet",
+            "max_tokens": 64,
+            "messages": [{"role": "user", "content": "Use adaptive thinking"}],
+            "thinking": {"type": "adaptive"},
+        }
+    )
+    payload = _assert_anthropic_error_shape(response, expected_status=400)
+    message = payload["error"].get("message", "")
+    assert "does not support adaptive thinking" in message, payload
+
+
+async def test_messages_rejects_invalid_thinking_type() -> None:
+    response = await _post_messages_in_process(
+        {
+            "model": "claude-sonnet-4-6",
+            "max_tokens": 64,
+            "messages": [{"role": "user", "content": "Use thinking"}],
+            "thinking": {"type": "foo"},
+        }
+    )
+    payload = _assert_anthropic_error_shape(response, expected_status=400)
+    message = payload["error"].get("message", "")
+    assert "thinking" in message, payload
 
 
 async def test_streaming_event_order_and_shapes() -> None:
@@ -1270,6 +1412,21 @@ async def main() -> None:
 
     await test_token_count_rejects_web_search_conflicting_domain_filters()
     print("- count_tokens web_search domain filter validation check passed")
+
+    await test_messages_accepts_adaptive_thinking_for_claude_sonnet_4_6()
+    print("- messages adaptive thinking support (claude-sonnet-4-6) check passed")
+
+    await test_messages_accepts_adaptive_thinking_for_claude_opus_4_6()
+    print("- messages adaptive thinking support (claude-opus-4-6) check passed")
+
+    await test_messages_enabled_thinking_with_budget_tokens_still_works()
+    print("- messages enabled thinking budget_tokens compatibility check passed")
+
+    await test_messages_rejects_adaptive_thinking_for_older_models()
+    print("- messages adaptive thinking model compatibility rejection check passed")
+
+    await test_messages_rejects_invalid_thinking_type()
+    print("- messages invalid thinking.type validation check passed")
 
     await test_request_converter_supports_image_url_sources()
     print("- request converter image url support check passed")

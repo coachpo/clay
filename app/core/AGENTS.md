@@ -31,6 +31,6 @@
 
 ## VERIFICATION
 ```bash
-mypy src/
+mypy app/
 python tests/test_main.py
 ```

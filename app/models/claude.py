@@ -229,13 +229,16 @@ class ClaudeContextManagement(StrictBaseModel):
 
 
 class ClaudeThinkingConfig(StrictBaseModel):
-    type: Literal["enabled", "disabled"]
+    type: Literal["enabled", "disabled", "adaptive"]
     budget_tokens: Optional[int] = Field(default=None, ge=1)
+    effort: Optional[Literal["low", "medium", "high"]] = None
 
     @model_validator(mode="after")
     def validate_budget_tokens(self) -> "ClaudeThinkingConfig":
-        if self.type == "disabled" and self.budget_tokens is not None:
+        if self.type != "enabled" and self.budget_tokens is not None:
             raise ValueError("budget_tokens is only valid when thinking.type is 'enabled'")
+        if self.type != "adaptive" and self.effort is not None:
+            raise ValueError("effort is only valid when thinking.type is 'adaptive'")
         return self
 
 

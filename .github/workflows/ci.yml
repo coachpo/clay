@@ -15,7 +15,7 @@ permissions:
   contents: read
 
 env:
-  PYTHON_VERSION: "3.12"
+  PYTHON_VERSION: "3.13"
   OPENAI_API_KEY: sk-ci-placeholder
 
 jobs:
@@ -37,19 +37,19 @@ jobs:
           python -m pip install '.[dev]'
 
       - name: Check import sorting
-        run: isort --check-only src tests
+        run: isort --check-only app tests
 
       - name: Check formatting
-        run: black --check src tests
+        run: black --check app tests
 
       - name: Run ruff lint
-        run: ruff check src tests
+        run: ruff check app tests
 
       - name: Run mypy type checks
-        run: mypy src
+        run: mypy app
 
       - name: Smoke compile
-        run: python -m compileall -q src tests
+        run: python -m compileall -q app tests
 
   docker-build-smoke:
     runs-on: ubuntu-latest

@@ -7,8 +7,8 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
-from src.api.endpoints import router as api_router
-from src.core.config import config
+from app.api.endpoints import router as api_router
+from app.core.config import config
 
 app = FastAPI(title="Clay API Proxy", version="1.0.0")
 app.include_router(api_router)
@@ -170,7 +170,7 @@ def main() -> None:
         log_level = "info"
 
     uvicorn.run(
-        "src.main:app",
+        "app.main:app",
         host=config.host,
         port=config.port,
         log_level=log_level,

@@ -8,19 +8,19 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import ValidationError
 
-from src.conversion.request_converter import (
+from app.conversion.request_converter import (
     convert_claude_to_openai,
     parse_tool_result_content,
 )
-from src.conversion.response_converter import (
+from app.conversion.response_converter import (
     convert_openai_streaming_to_claude_with_cancellation,
     convert_openai_to_claude_response,
 )
-from src.core.client import OpenAIClient
-from src.core.config import config
-from src.core.logging import logger
-from src.core.model_manager import model_manager
-from src.models.claude import (
+from app.core.client import OpenAIClient
+from app.core.config import config
+from app.core.logging import logger
+from app.core.model_manager import model_manager
+from app.models.claude import (
     ClaudeMessagesRequestModel,
     ClaudeTokenCountRequestModel,
     parse_claude_messages_request,
@@ -40,6 +40,7 @@ openai_client = OpenAIClient(
 
 
 MAX_ANTHROPIC_REQUEST_BYTES = 32 * 1024 * 1024
+ADAPTIVE_THINKING_MODEL_PREFIXES = ("claude-opus-4-6", "claude-sonnet-4-6")
 
 
 def _anthropic_error_response(
@@ -229,6 +230,29 @@ def _resolve_fallback_version(
     return min(supported_versions) if supported_versions else None
 
 
+def _model_supports_adaptive_thinking(model_name: str) -> bool:
+    normalized = model_name.strip().lower()
+    return normalized.startswith(ADAPTIVE_THINKING_MODEL_PREFIXES)
+
+
+def _validate_thinking_model_compatibility(
+    request: ClaudeMessagesRequestModel,
+    request_id: str,
+) -> None:
+    if request.thinking is None or request.thinking.type != "adaptive":
+        return
+    if _model_supports_adaptive_thinking(request.model):
+        return
+    raise HTTPException(
+        status_code=400,
+        detail=_anthropic_error_response(
+            message=f"Model '{request.model}' does not support adaptive thinking.",
+            error_type="invalid_request_error",
+            request_id=request_id,
+        ),
+    )
+
+
 def _build_openai_request_from_claude(
     claude_request: ClaudeMessagesRequestModel,
 ) -> Dict[str, Any]:
@@ -410,6 +434,7 @@ async def create_message(
 
     try:
         request = await _parse_claude_messages_request(http_request)
+        _validate_thinking_model_compatibility(request, request_id)
         logger.debug(
             "Processing Claude request: model=%s, stream=%s",
             request.model,

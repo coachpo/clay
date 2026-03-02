@@ -16,12 +16,9 @@ classifiers = [
     "Intended Audience :: Developers",
     "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.9",
-    "Programming Language :: Python :: 3.10",
-    "Programming Language :: Python :: 3.11",
-    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
 ]
-requires-python = ">=3.9"
+requires-python = ">=3.13"
 dependencies = [
     "fastapi[standard]>=0.115.11",
     "uvicorn>=0.34.0",
@@ -49,23 +46,23 @@ Repository = "https://github.com/coachpo/clay.git"
 Issues = "https://github.com/coachpo/clay/issues"
 
 [project.scripts]
-clay = "src.main:main"
+clay = "app.main:main"
 
 [tool.black]
 line-length = 100
-target-version = ["py39"]
+target-version = ["py313"]
 
 [tool.isort]
 profile = "black"
 line_length = 100
-known_first_party = ["src"]
+known_first_party = ["app"]
 
 [tool.hatch.build.targets.wheel]
-packages = ["src"]
+packages = ["app"]
 
 [tool.hatch.build.targets.sdist]
 include = [
-    "/src",
+    "/app",
     "/start_proxy.sh",
     "/pyproject.toml",
 ]
@@ -74,7 +71,7 @@ include = [
 asyncio_mode = "auto"
 
 [tool.mypy]
-python_version = "3.9"
+python_version = "3.13"
 warn_return_any = true
 warn_unused_configs = true
 disallow_untyped_defs = true
@@ -86,8 +83,8 @@ pretty = true
 
 [tool.ruff]
 line-length = 100
-target-version = "py39"
-src = ["src", "tests"]
+target-version = "py313"
+src = ["app", "tests"]
 exclude = [".venv", "build", "dist"]
 
 [tool.ruff.lint]

@@ -1,6 +1,6 @@
 from typing import Protocol
 
-from src.core.config import config
+from app.core.config import config
 
 
 class ConfigLike(Protocol):

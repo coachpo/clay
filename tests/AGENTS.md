@@ -2,7 +2,7 @@
 
 ## READ WHEN
 - Editing `tests/**`.
-- Validating behavior changes in `src/api`, `src/core/client`, or `src/conversion`.
+- Validating behavior changes in `app/api`, `app/core/client`, or `app/conversion`.
 
 ## TEST LAYOUT
 - `tests/test_main.py`: broad integration scenarios across Anthropic and OpenAI-compatible routes.

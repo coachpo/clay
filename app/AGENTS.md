@@ -1,14 +1,14 @@
-# SRC KNOWLEDGE BASE
+# APP KNOWLEDGE BASE
 
 ## READ WHEN
-- Modifying any file under `src/**`.
+- Modifying any file under `app/**`.
 - Investigating request translation, streaming/cancellation behavior, provider errors, or model routing.
 
 ## CHILD GUIDES
-- `src/api/**` -> `src/api/AGENTS.md`
-- `src/core/**` -> `src/core/AGENTS.md`
-- `src/conversion/**` -> `src/conversion/AGENTS.md`
-- `src/models/**` -> `src/models/AGENTS.md`
+- `app/api/**` -> `app/api/AGENTS.md`
+- `app/core/**` -> `app/core/AGENTS.md`
+- `app/conversion/**` -> `app/conversion/AGENTS.md`
+- `app/models/**` -> `app/models/AGENTS.md`
 - Nearest child guide overrides this file for local details.
 
 ## MODULE MAP
@@ -35,10 +35,10 @@
 ```bash
 python -m pip install --upgrade pip
 python -m pip install '.[dev]'
-mypy src/
-black src/
-isort src/
-ruff check src/
+mypy app/
+black app/
+isort app/
+ruff check app/
 ./start_proxy.sh
 ```
 

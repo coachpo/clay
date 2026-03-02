@@ -4,9 +4,9 @@ import json
 import logging
 from typing import Any, Dict, List, Optional, Protocol, Sequence, Union
 
-from src.core.config import config
-from src.core.constants import Constants
-from src.models.claude import (
+from app.core.config import config
+from app.core.constants import Constants
+from app.models.claude import (
     ClaudeContentBlockDocument,
     ClaudeContentBlockImage,
     ClaudeContentBlockRedactedThinking,
@@ -20,6 +20,7 @@ from src.models.claude import (
     ClaudeMessageContentBlock,
     ClaudeMessagesRequestModel,
     ClaudeSystemContent,
+    ClaudeThinkingConfig,
     ClaudeTool,
     ClaudeToolChoiceAny,
     ClaudeToolChoiceAuto,
@@ -100,9 +101,7 @@ def convert_claude_to_responses_request(
 
     if claude_request.thinking is not None:
         responses_request["reasoning"] = {
-            "effort": _map_thinking_budget_to_reasoning_effort(
-                claude_request.thinking.budget_tokens
-            )
+            "effort": _resolve_reasoning_effort(claude_request.thinking)
         }
     if claude_request.context_management is not None:
         responses_request["context_management"] = _convert_context_management_for_responses(
@@ -470,6 +469,12 @@ def _map_thinking_budget_to_reasoning_effort(budget_tokens: Optional[int]) -> st
     if budget_tokens < 4096:
         return "medium"
     return "high"
+
+
+def _resolve_reasoning_effort(thinking: ClaudeThinkingConfig) -> str:
+    if thinking.type == "adaptive" and thinking.effort is not None:
+        return thinking.effort
+    return _map_thinking_budget_to_reasoning_effort(thinking.budget_tokens)
 
 
 def _convert_context_management_for_responses(

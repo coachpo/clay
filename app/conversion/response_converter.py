@@ -6,8 +6,8 @@ from typing import Any, AsyncGenerator, Dict, List, Optional, Protocol, Tuple
 
 from fastapi import HTTPException, Request
 
-from src.core.constants import Constants
-from src.models.claude import ClaudeMessagesRequestModel
+from app.core.constants import Constants
+from app.models.claude import ClaudeMessagesRequestModel
 
 
 class LoggerLike(Protocol):

@@ -13,7 +13,7 @@ RUN apt-get update \
 RUN groupadd --system app && useradd --system --gid app --home-dir /app app
 
 COPY pyproject.toml /app/pyproject.toml
-COPY src /app/src
+COPY app /app/app
 
 RUN pip install --no-cache-dir .
 
