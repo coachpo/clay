@@ -14,7 +14,6 @@ RUN groupadd --system app && useradd --system --gid app --home-dir /app app
 
 COPY pyproject.toml /app/pyproject.toml
 COPY src /app/src
-COPY start_proxy.py /app/start_proxy.py
 
 RUN pip install --no-cache-dir .
 

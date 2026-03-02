@@ -34,5 +34,4 @@
 ## VERIFICATION
 ```bash
 python tests/test_main.py
-python test_cancellation.py
 ```

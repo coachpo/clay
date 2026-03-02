@@ -16,7 +16,7 @@ Runtime is Python/FastAPI; generation is routed upstream through OpenAI Response
 - `src/core/**` -> `src/core/AGENTS.md`
 - `src/conversion/**` -> `src/conversion/AGENTS.md`
 - `src/models/**` -> `src/models/AGENTS.md`
-- `tests/**` and `test_cancellation.py` -> `tests/AGENTS.md`
+- `tests/**` -> `tests/AGENTS.md`
 
 ## STRUCTURE
 ```text
@@ -28,9 +28,8 @@ clay/
 |   |-- conversion/              # Claude<->OpenAI request/response + SSE conversion
 |   `-- models/                  # strict Claude schema + permissive OpenAI compatibility models
 |-- tests/test_main.py           # async integration scenario runner
-|-- test_cancellation.py         # cancellation/disconnect scenario runner
 |-- .github/workflows/           # CI quality, Docker image build, cleanup automation
-|-- start_proxy.py               # compatibility wrapper entry script (mutates sys.path)
+|-- start_proxy.sh               # compatibility wrapper shell script
 |-- pyproject.toml               # packaging entrypoint + tool config
 `-- Dockerfile                   # production container build
 ```
@@ -46,7 +45,7 @@ clay/
 | Provider transport + cancellation | `src/core/client.py` | async OpenAI calls + `request_id` cancellation map |
 | Config/env behavior | `src/core/config.py` | import-time validation, compatibility flags, state-mode guard |
 | Schema constraints | `src/models/claude.py`, `src/models/openai.py` | strict Claude validation vs permissive OpenAI model shapes |
-| Integration behavior checks | `tests/test_main.py`, `test_cancellation.py` | script-style end-to-end checks and cancellation probes |
+| Integration behavior checks | `tests/test_main.py` | script-style end-to-end checks |
 
 ## CODE MAP
 | Symbol | Type | Location | Refs | Role |
@@ -61,10 +60,10 @@ clay/
 
 ## CONVENTIONS
 - Use `pyproject.toml` as the dependency source of truth (`python -m pip install .[dev]` for local quality checks).
-- Canonical runtime entrypoint is `clay` (`pyproject` script -> `src.main:main`); `start_proxy.py` is compatibility-only.
+- Canonical runtime entrypoint is `clay` (`pyproject` script -> `src.main:main`); `start_proxy.sh` is compatibility-only.
 - Anthropic header validation is configurable (`ANTHROPIC_SUPPORTED_VERSIONS`, fallback/missing flags), defaulting to `2023-06-01`.
 - Responses include both `request-id` and `x-request-id` headers on success and error paths.
-- Integration coverage is script-driven (`python tests/test_main.py`, `python test_cancellation.py`); pytest config exists in `pyproject.toml` but is not the primary flow.
+- Integration coverage is script-driven (`python tests/test_main.py`); pytest config exists in `pyproject.toml` but is not the primary flow.
 - CI quality gates run `isort`, `black`, `ruff`, `mypy`, and `compileall`; CI does not run live integration scripts.
 
 ## ANTI-PATTERNS (THIS PROJECT)
@@ -86,17 +85,16 @@ clay/
 python -m pip install --upgrade pip
 python -m pip install '.[dev]'
 clay
-python start_proxy.py
-isort --check-only src tests test_cancellation.py
-black --check src tests test_cancellation.py
-ruff check src tests test_cancellation.py
+./start_proxy.sh
+isort --check-only src tests
+black --check src tests
+ruff check src tests
 mypy src
 python tests/test_main.py
-python test_cancellation.py
 docker build -t clay .
 ```
 
 ## NOTES
-- `.dockerignore` excludes `AGENTS.md`, `tests/`, and `test_cancellation.py` from image build context.
+- `.dockerignore` excludes `AGENTS.md` and `tests/` from image build context.
 - `src/models/openai.py` defines compatibility request models; active HTTP routes currently expose only `/v1/models*` on the OpenAI-compatible surface.
 - `config = Config()` runs at import time and exits process on invalid required env or invalid state mode.

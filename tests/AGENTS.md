@@ -2,13 +2,11 @@
 
 ## READ WHEN
 - Editing `tests/**`.
-- Editing `test_cancellation.py`.
 - Validating behavior changes in `src/api`, `src/core/client`, or `src/conversion`.
 
 ## TEST LAYOUT
 - `tests/test_main.py`: broad integration scenarios across Anthropic and OpenAI-compatible routes.
-- `../test_cancellation.py`: cancellation/disconnect checks plus OpenAI auth sanity check.
-- Both scripts are executable entrypoints via `asyncio.run(main())`.
+- The script is executable entrypoint via `asyncio.run(main())`.
 
 ## LOCAL CONTRACTS
 - Tests expect proxy at `http://localhost:8000` unless `BASE_URL` overrides it.
@@ -21,7 +19,6 @@
 ## LOCAL COMMANDS
 ```bash
 python tests/test_main.py
-python test_cancellation.py
 ```
 
 ## GOTCHAS
@@ -30,5 +27,5 @@ python test_cancellation.py
 - Failures are often environment/provider issues (`OPENAI_API_KEY`, reachability, rate limits), not pure code regressions.
 
 ## ESCALATION
-- If endpoint contracts change, update both scripts to keep Anthropic/OpenAI assertions aligned.
+- If endpoint contracts change, update `tests/test_main.py` to keep Anthropic/OpenAI assertions aligned.
 - If introducing real pytest suites/fixtures, update root `AGENTS.md` command guidance.

@@ -33,4 +33,3 @@ dist
 # Local docs and project metadata not needed in image
 AGENTS.md
 tests
-test_cancellation.py

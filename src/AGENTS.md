@@ -39,13 +39,13 @@ mypy src/
 black src/
 isort src/
 ruff check src/
-python start_proxy.py
+./start_proxy.sh
 ```
 
 ## GOTCHAS
 - `core/config.py` and `core/logging.py` execute import-time side effects; avoid moving imports casually.
 - `main.py` and `core/logging.py` each normalize log level; keep behavior aligned if touched.
-- `start_proxy.py` mutates `sys.path`; prefer `clay` for stable packaging path.
+- `start_proxy.sh` is compatibility-only; prefer `clay` for stable packaging path.
 - `api/endpoints.py` is intentionally large and contract-heavy; keep bugfixes scoped and regression-tested.
 
 ## ESCALATION

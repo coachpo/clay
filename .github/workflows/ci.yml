@@ -37,19 +37,19 @@ jobs:
           python -m pip install '.[dev]'
 
       - name: Check import sorting
-        run: isort --check-only src tests test_cancellation.py
+        run: isort --check-only src tests
 
       - name: Check formatting
-        run: black --check src tests test_cancellation.py
+        run: black --check src tests
 
       - name: Run ruff lint
-        run: ruff check src tests test_cancellation.py
+        run: ruff check src tests
 
       - name: Run mypy type checks
         run: mypy src
 
       - name: Smoke compile
-        run: python -m compileall -q src tests test_cancellation.py start_proxy.py
+        run: python -m compileall -q src tests
 
   docker-build-smoke:
     runs-on: ubuntu-latest
