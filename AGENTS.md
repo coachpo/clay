@@ -1,12 +1,12 @@
 # PROJECT KNOWLEDGE BASE
 
-**Generated:** 2026-03-01T22:18:01+0200  
-**Commit:** af8e3ec  
+**Generated:** 2026-03-02T17:28:29+02:00  
+**Commit:** 0a44782  
 **Branch:** main
 
 ## OVERVIEW
-Clay exposes Anthropic-compatible generation (`/v1/messages`) plus OpenAI-compatible model discovery endpoints, forwarding generation upstream through OpenAI Responses API.
-Runtime is Python/FastAPI with explicit request validation, model remapping, cancellation-aware transport, and SSE protocol conversion.
+Clay exposes Anthropic-compatible generation (`/v1/messages`, `/v1/messages/count_tokens`) and OpenAI-compatible model discovery (`/v1/models*`).
+Runtime is Python/FastAPI; generation is routed upstream through OpenAI Responses API with explicit conversion, SSE bridging, and cancellation wiring.
 
 ## AGENTS HIERARCHY
 - Nearest `AGENTS.md` wins; parent guidance still applies unless a child overrides it.
@@ -22,31 +22,32 @@ Runtime is Python/FastAPI with explicit request validation, model remapping, can
 ```text
 clay/
 |-- src/
-|   |-- main.py                # FastAPI app + exception adapters + uvicorn launcher
-|   |-- api/endpoints.py       # Anthropic/OpenAI routes + validation + cancellation wiring
-|   |-- core/                  # config, OpenAI client, logging, constants, model mapping
-|   |-- conversion/            # Claude<->OpenAI request/response + SSE conversion
-|   `-- models/                # strict Claude schema + permissive OpenAI request schema
-|-- tests/test_main.py         # async integration scenario runner
-|-- test_cancellation.py       # cancellation/disconnect scenario runner
-|-- start_proxy.py             # wrapper entry script (mutates sys.path)
-|-- pyproject.toml             # packaging entrypoint + tool config
-|-- Dockerfile                 # lockfile-enforced container build
-`-- docker-compose.yml         # local container wiring
+|   |-- main.py                  # FastAPI app + exception adapters + uvicorn launcher
+|   |-- api/endpoints.py         # Anthropic/OpenAI routes, validation gates, cancellation wiring
+|   |-- core/                    # config, OpenAI client, logging, constants, model mapping
+|   |-- conversion/              # Claude<->OpenAI request/response + SSE conversion
+|   `-- models/                  # strict Claude schema + permissive OpenAI compatibility models
+|-- tests/test_main.py           # async integration scenario runner
+|-- test_cancellation.py         # cancellation/disconnect scenario runner
+|-- .github/workflows/           # CI quality, Docker image build, cleanup automation
+|-- start_proxy.py               # compatibility wrapper entry script (mutates sys.path)
+|-- pyproject.toml               # packaging entrypoint + tool config
+|-- Dockerfile                   # lockfile-enforced container build
+`-- uv.lock                      # authoritative dependency lockfile
 ```
 
 ## WHERE TO LOOK
 | Task | Location | Notes |
 |------|----------|-------|
-| Anthropic request flow | `src/api/endpoints.py` | `/v1/messages` validation, conversion, streaming/non-stream paths |
-| OpenAI-compatible routes | `src/api/endpoints.py` | `/v1/models` only; generation routes removed |
-| Request conversion | `src/conversion/request_converter.py` | Claude blocks/tools/thinking -> OpenAI payload |
-| Stream conversion | `src/conversion/response_converter.py` | SSE event order + tool-call delta reconstruction |
+| Anthropic request flow | `src/api/endpoints.py` | `/v1/messages` validation, conversion, stream/non-stream paths |
+| Token counting behavior | `src/api/endpoints.py` | `/v1/messages/count_tokens` estimation rules |
+| OpenAI-compatible surface | `src/api/endpoints.py` | `/v1/models*` only; generation routes intentionally return 404 |
+| Request conversion | `src/conversion/request_converter.py` | Claude blocks/tools/thinking -> OpenAI Responses payload |
+| Stream conversion | `src/conversion/response_converter.py` | OpenAI SSE/chunk events -> Claude SSE event order |
 | Provider transport + cancellation | `src/core/client.py` | async OpenAI calls + `request_id` cancellation map |
-| Config and env behavior | `src/core/config.py` | import-time validation and runtime defaults |
-| Model name policy | `src/core/model_manager.py` | pass-through and Claude family mapping |
-| Schema constraints | `src/models/claude.py`, `src/models/openai.py` | strict Claude validation vs permissive OpenAI request models |
-| Integration behavior checks | `tests/test_main.py`, `test_cancellation.py` | script-style end-to-end scenarios |
+| Config/env behavior | `src/core/config.py` | import-time validation, compatibility flags, state-mode guard |
+| Schema constraints | `src/models/claude.py`, `src/models/openai.py` | strict Claude validation vs permissive OpenAI model shapes |
+| Integration behavior checks | `tests/test_main.py`, `test_cancellation.py` | script-style end-to-end checks and cancellation probes |
 
 ## CODE MAP
 | Symbol | Type | Location | Refs | Role |
@@ -54,45 +55,48 @@ clay/
 | `create_message` | async function | `src/api/endpoints.py` | high | Main Anthropic request lifecycle |
 | `_create_response_with_disconnect_cancellation` | async function | `src/api/endpoints.py` | medium | Non-stream disconnect cancellation |
 | `OpenAIClient.create_response_stream` | async method | `src/core/client.py` | high | Streaming Responses provider transport |
-| `convert_claude_to_openai` | function | `src/conversion/request_converter.py` | high | Claude->OpenAI payload translation |
-| `convert_openai_streaming_to_claude_with_cancellation` | async function | `src/conversion/response_converter.py` | high | OpenAI SSE->Claude SSE bridge |
+| `convert_claude_to_openai` | function | `src/conversion/request_converter.py` | high | Claude -> OpenAI payload translation |
+| `convert_openai_streaming_to_claude_with_cancellation` | async function | `src/conversion/response_converter.py` | high | OpenAI stream -> Claude SSE bridge |
 | `ClaudeMessagesRequest` | class | `src/models/claude.py` | medium | Strict Claude request schema + validators |
 | `ModelManager.map_claude_model_to_openai` | method | `src/core/model_manager.py` | medium | Model routing policy |
 
 ## CONVENTIONS
-- Use `uv` workflow first (`uv sync`, `uv run ...`); `pip` via `requirements.txt` is fallback.
-- Docker build expects lockfile correctness (`uv sync --locked` in `Dockerfile`).
-- `clay` entrypoint resolves to `src.main:main`; `start_proxy.py` is a compatibility wrapper.
-- Anthropic contract enforces `anthropic-version: 2023-06-01` and JSON content type.
-- Responses include both `request-id` and `x-request-id` headers.
-- Integration tests are executable async scripts; no repo-level pytest config.
+- Use `uv` and `uv.lock` as the dependency source of truth (`uv sync --locked` in CI and Docker).
+- Canonical runtime entrypoint is `uv run clay` (`pyproject` script -> `src.main:main`); `start_proxy.py` is compatibility-only.
+- Anthropic header validation is configurable (`ANTHROPIC_SUPPORTED_VERSIONS`, fallback/missing flags), defaulting to `2023-06-01`.
+- Responses include both `request-id` and `x-request-id` headers on success and error paths.
+- Integration coverage is script-driven (`python tests/test_main.py`, `python test_cancellation.py`); pytest config exists in `pyproject.toml` but is not the primary flow.
+- CI quality gates run `isort`, `black`, `ruff`, `mypy`, and `compileall`; CI does not run live integration scripts.
 
 ## ANTI-PATTERNS (THIS PROJECT)
 - Do not rely on stale docs command `python src/test_claude_to_openai.py` (file does not exist).
-- Do not bypass lockfile sync in container builds (`uv sync --locked` is required path).
-- Do not assume `start_proxy.py` is the canonical runtime path; prefer packaged entrypoint for stable imports.
-- Do not treat script-style tests as isolated unit tests; many scenarios hit live provider routes.
-- Do not assume `src/models/openai.py` is empty; endpoint validation now depends on its request models.
+- Do not use removed generation routes `POST /v1/chat/completions` or `POST /v1/responses`; they intentionally return 404.
+- Do not assume `docker-compose.yml` exists; this repo currently has no compose file.
+- Do not bypass lockfile sync in container/CI paths (`uv sync --locked` is required).
+- Do not remove request-id header parity (`request-id` and `x-request-id`) from API responses.
+- Do not treat provider-dependent integration skips/timeouts as deterministic product regressions.
 
 ## UNIQUE STYLES
-- One router serves Anthropic-compatible and OpenAI-compatible surfaces from the same module.
-- Conversion layer preserves tool-call identity and Claude SSE ordering semantics.
+- One router serves Anthropic-compatible generation and OpenAI-compatible model discovery with explicit contract separation.
+- Conversion layer supports both Responses-style events and legacy chunk shapes while preserving Claude SSE semantics.
 - Cancellation is coordinated across API, conversion, and client layers via shared `request_id`.
-- Model mapping supports direct pass-through for `gpt-*`, `o1-*`, `o3-*`, `o4-*`, `gpt-5`, `ep-*`, `doubao-*`, `deepseek-*`.
+- Optional Anthropic compatibility metadata can be attached into provider `extra_body.proxy_metadata` when enabled.
 
 ## COMMANDS
 ```bash
-uv sync
+uv sync --locked --group dev
 uv run clay
 python start_proxy.py
-docker compose up -d
-uv run black src/
-uv run isort src/
-uv run mypy src/
+uv run isort --check-only src tests test_cancellation.py
+uv run black --check src tests test_cancellation.py
+uv run ruff check src tests test_cancellation.py
+uv run mypy src
 python tests/test_main.py
 python test_cancellation.py
+docker build -t clay .
 ```
 
 ## NOTES
-- `src/core/config.py` initializes `config` at import time and exits process on invalid required env.
-- LSP `documentSymbol` support is unavailable in this environment; symbol map used AST-based extraction.
+- `.dockerignore` excludes `AGENTS.md`, `tests/`, and `test_cancellation.py` from image build context.
+- `src/models/openai.py` defines compatibility request models; active HTTP routes currently expose only `/v1/models*` on the OpenAI-compatible surface.
+- `config = Config()` runs at import time and exits process on invalid required env or invalid state mode.

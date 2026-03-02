@@ -16,6 +16,7 @@
 - Many checks are provider-dependent and skip when upstream is unavailable/timeouts occur.
 - Assertions validate request ID header parity (`request-id` matches `x-request-id`).
 - Coverage is scenario-driven integration, not fixture-heavy pytest units.
+- `pyproject.toml` includes pytest config (`asyncio_mode = auto`), but canonical repo flow is script execution.
 
 ## LOCAL COMMANDS
 ```bash
@@ -25,7 +26,7 @@ python test_cancellation.py
 
 ## GOTCHAS
 - No `README.md` or `QUICKSTART.md` docs are maintained in this repository.
-- No `pytest.ini`, `conftest.py`, or repo-level pytest options are present.
+- CI quality checks do not execute live integration scripts.
 - Failures are often environment/provider issues (`OPENAI_API_KEY`, reachability, rate limits), not pure code regressions.
 
 ## ESCALATION
