@@ -1,35 +1,14 @@
-# VCS and CI metadata
-.git
-.github
+# Production image context: keep only runtime source + packaging metadata.
+**
 
-# Local development environment
-.env
-.env.*
-!.env.example
-.venv
-venv
-env
-ENV
-.python-version
+# Required by Dockerfile and packaging.
+!pyproject.toml
+!app/
+!app/**
+!.dockerignore
 
-# Python and tooling caches
-__pycache__
-*.py[cod]
-*.pyo
-*.pyd
-.mypy_cache
-.pytest_cache
-.ruff_cache
-.tox
-.nox
-.coverage
-htmlcov
-
-# Build outputs
-build
-dist
-*.egg-info
-
-# Local docs and project metadata not needed in image
-AGENTS.md
-tests
+# Exclude local Python build artifacts under allowed paths.
+app/**/__pycache__/
+app/**/*.py[cod]
+app/**/*.pyo
+app/**/*.pyd

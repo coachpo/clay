@@ -1,16 +1,27 @@
+# ------------------------------
 # OS and editor artifacts
+# ------------------------------
 .DS_Store
 Thumbs.db
 .idea/
 .vscode/
 *.iml
+*.swp
+*.swo
+*~
 
+# ------------------------------
 # Environment and local secrets
+# ------------------------------
 .env
 .env.*
 !.env.example
+.envrc
+*.local
 
-# Python bytecode and caches
+# ------------------------------
+# Python bytecode, caches, and tooling
+# ------------------------------
 __pycache__/
 *.py[cod]
 *$py.class
@@ -23,13 +34,19 @@ __pycache__/
 .nox/
 .tox/
 
+# ------------------------------
 # Virtual environments
+# ------------------------------
 .venv/
 venv/
 env/
 ENV/
+__pypackages__/
+.python-version
 
+# ------------------------------
 # Build and packaging artifacts
+# ------------------------------
 build/
 dist/
 site/
@@ -38,22 +55,37 @@ site/
 *.egg
 pip-wheel-metadata/
 wheels/
+*.whl
+*.spec
 
+# ------------------------------
 # Coverage and test artifacts
+# ------------------------------
 .coverage
 .coverage.*
 coverage.xml
 htmlcov/
 .cache/
+pytestdebug.log
 
+# ------------------------------
 # Runtime files
+# ------------------------------
 *.log
 *.pid
 *.pid.lock
 *.out
 *.err
 
-# Tool-specific files
-.python-version
+# ------------------------------
+# Local state/data (non-source)
+# ------------------------------
+*.sqlite3
+*.db
+.ipynb_checkpoints/
+
+# ------------------------------
+# Tool-specific local config
+# ------------------------------
 poetry.toml
 pyrightconfig.json
