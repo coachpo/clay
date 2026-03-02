@@ -64,6 +64,11 @@ class Config:
         self.include_original_anthropic_request = _env_flag(
             "INCLUDE_ORIGINAL_ANTHROPIC_REQUEST", self.anthropic_compatibility_mode
         )
+        self.openai_responses_state_mode = (
+            os.environ.get("OPENAI_RESPONSES_STATE_MODE", "stateless").strip().lower()
+        )
+        if self.openai_responses_state_mode not in {"stateless", "provider"}:
+            raise ValueError("OPENAI_RESPONSES_STATE_MODE must be either 'stateless' or 'provider'")
 
     def validate_api_key(self) -> bool:
         """Basic API key validation."""
@@ -82,11 +87,12 @@ try:
     config = Config()
     print(
         "Configuration loaded: API_KEY=%s..., BASE_URL='%s', "
-        "ANTHROPIC_DEFAULT_VERSION='%s'"
+        "ANTHROPIC_DEFAULT_VERSION='%s', OPENAI_RESPONSES_STATE_MODE='%s'"
         % (
             "*" * 20,
             config.openai_base_url,
             config.anthropic_default_version,
+            config.openai_responses_state_mode,
         )
     )
 except Exception as error:

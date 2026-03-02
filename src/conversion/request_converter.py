@@ -45,205 +45,175 @@ def convert_claude_to_openai(
     claude_request: ClaudeMessagesRequestModel,
     model_manager: ModelMapper,
 ) -> Dict[str, Any]:
-    """Convert Claude API request format to OpenAI chat.completions format."""
+    """Backward-compatible alias: convert Claude request into OpenAI Responses payload."""
+    return convert_claude_to_responses_request(claude_request, model_manager)
+
+
+def convert_claude_to_responses_request(
+    claude_request: ClaudeMessagesRequestModel,
+    model_manager: ModelMapper,
+) -> Dict[str, Any]:
+    """Convert Claude /v1/messages request into OpenAI Responses API payload."""
+    _validate_supported_claude_fields_for_responses(claude_request)
+
     openai_model = model_manager.map_claude_model_to_openai(claude_request.model)
-    openai_messages: List[Dict[str, Any]] = []
-
-    if claude_request.system:
-        system_text = _convert_system_content(claude_request.system)
-        if system_text:
-            openai_messages.append({"role": Constants.ROLE_SYSTEM, "content": system_text})
-
-    for message in claude_request.messages:
-        if message.role == Constants.ROLE_USER:
-            openai_messages.extend(convert_claude_user_message(message))
-        elif message.role == Constants.ROLE_ASSISTANT:
-            openai_messages.append(convert_claude_assistant_message(message))
-
-    max_tokens = min(
+    max_output_tokens = min(
         max(claude_request.max_tokens, config.min_tokens_limit),
         config.max_tokens_limit,
     )
 
-    openai_request: Dict[str, Any] = {
+    responses_request: Dict[str, Any] = {
         "model": openai_model,
-        "messages": openai_messages,
+        "input": _convert_claude_messages_to_responses_input(claude_request.messages),
         "stream": claude_request.stream,
+        "max_output_tokens": max_output_tokens,
+        "store": config.openai_responses_state_mode == "provider",
     }
 
-    if _uses_max_completion_tokens(openai_model):
-        openai_request["max_completion_tokens"] = max_tokens
-    else:
-        openai_request["max_tokens"] = max_tokens
+    instructions = _convert_system_content(claude_request.system) if claude_request.system else ""
+    if instructions:
+        responses_request["instructions"] = instructions
 
-    if claude_request.stop_sequences:
-        openai_request["stop"] = claude_request.stop_sequences
-    if claude_request.top_p is not None and not _uses_max_completion_tokens(openai_model):
-        openai_request["top_p"] = claude_request.top_p
-    if claude_request.temperature is not None and not _uses_max_completion_tokens(openai_model):
-        openai_request["temperature"] = claude_request.temperature
+    if claude_request.temperature is not None:
+        responses_request["temperature"] = claude_request.temperature
+    if claude_request.top_p is not None:
+        responses_request["top_p"] = claude_request.top_p
     if claude_request.metadata is not None:
-        openai_request["metadata"] = claude_request.metadata.model_dump(exclude_none=True)
+        responses_request["metadata"] = claude_request.metadata.model_dump(exclude_none=True)
     if claude_request.service_tier is not None:
-        openai_request["service_tier"] = claude_request.service_tier
-
-    supports_extension_passthrough = _supports_extension_passthrough(config.openai_base_url)
-    extra_body: Dict[str, Any] = {}
-
-    if claude_request.top_k is not None:
-        if supports_extension_passthrough:
-            extra_body["top_k"] = claude_request.top_k
-        else:
-            logger.info("Ignoring top_k because target provider does not support it reliably")
-
-    if claude_request.thinking is not None:
-        thinking_payload = claude_request.thinking.model_dump(exclude_none=True)
-        if supports_extension_passthrough:
-            extra_body["thinking"] = thinking_payload
-        if (
-            claude_request.thinking.type == "enabled"
-            and _uses_max_completion_tokens(openai_model)
-            and "reasoning_effort" not in openai_request
-        ):
-            openai_request["reasoning_effort"] = _map_thinking_budget_to_reasoning_effort(
-                claude_request.thinking.budget_tokens
-            )
-
-    if claude_request.inference_geo is not None:
-        if supports_extension_passthrough:
-            extra_body["inference_geo"] = claude_request.inference_geo
-        else:
-            logger.info(
-                "Ignoring inference_geo because target provider does not support it reliably"
-            )
-
-    if extra_body:
-        existing_extra_body = openai_request.get("extra_body")
-        if isinstance(existing_extra_body, dict):
-            existing_extra_body.update(extra_body)
-        else:
-            openai_request["extra_body"] = extra_body
+        responses_request["service_tier"] = claude_request.service_tier
 
     if claude_request.tools:
-        openai_request["tools"] = [_convert_tool_definition(tool) for tool in claude_request.tools]
+        responses_request["tools"] = [
+            _convert_function_tool_definition(tool) for tool in claude_request.tools
+        ]
 
     if claude_request.tool_choice:
-        tool_choice = claude_request.tool_choice
-        function_tool_names = {
-            tool.name
-            for tool in (claude_request.tools or [])
-            if isinstance(tool, ClaudeFunctionTool)
+        tool_choice_value, parallel_tool_calls = _convert_tool_choice_for_responses(
+            claude_request.tool_choice
+        )
+        responses_request["tool_choice"] = tool_choice_value
+        if parallel_tool_calls is not None:
+            responses_request["parallel_tool_calls"] = parallel_tool_calls
+
+    if claude_request.thinking is not None:
+        responses_request["reasoning"] = {
+            "effort": _map_thinking_budget_to_reasoning_effort(
+                claude_request.thinking.budget_tokens
+            )
         }
-        has_native_web_search_tools = any(
-            isinstance(tool, ClaudeWebSearchTool) for tool in (claude_request.tools or [])
+
+    logger.debug(
+        "Converted Claude request to OpenAI Responses format: %s",
+        json.dumps(responses_request, ensure_ascii=False),
+    )
+    return responses_request
+
+
+def _validate_supported_claude_fields_for_responses(
+    claude_request: ClaudeMessagesRequestModel,
+) -> None:
+    if claude_request.stop_sequences is not None:
+        raise ValueError(
+            "Field 'stop_sequences' is not supported for /v1/messages in Responses-only mode."
+        )
+    if claude_request.top_k is not None:
+        raise ValueError("Field 'top_k' is not supported for /v1/messages in Responses-only mode.")
+    if claude_request.inference_geo is not None:
+        raise ValueError(
+            "Field 'inference_geo' is not supported for /v1/messages in Responses-only mode."
+        )
+    if claude_request.context_management is not None:
+        raise ValueError(
+            "Field 'context_management' is not supported for /v1/messages in Responses-only mode."
         )
 
-        if isinstance(tool_choice, ClaudeToolChoiceAuto):
-            openai_request["tool_choice"] = "auto"
-        elif isinstance(tool_choice, ClaudeToolChoiceAny):
-            openai_request["tool_choice"] = "required"
-        elif isinstance(tool_choice, ClaudeToolChoiceNone):
-            openai_request["tool_choice"] = "none"
-        elif isinstance(tool_choice, ClaudeToolChoiceTool):
-            should_ignore_native_web_search_tool_choice = has_native_web_search_tools and (
-                not function_tool_names
-                or (
-                    tool_choice.name == "web_search" and tool_choice.name not in function_tool_names
-                )
+    for index, tool in enumerate(claude_request.tools or []):
+        if isinstance(tool, ClaudeWebSearchTool):
+            raise ValueError(
+                "Field 'tools[%d]' uses native web_search variants, which are not supported in "
+                "Responses-only mode." % index
             )
-            if should_ignore_native_web_search_tool_choice:
-                logger.info(
-                    "Ignoring tool_choice type='tool' for native web_search tools because no matching function tool is present"
-                )
-            else:
-                openai_request["tool_choice"] = {
-                    "type": Constants.TOOL_FUNCTION,
-                    Constants.TOOL_FUNCTION: {"name": tool_choice.name},
-                }
 
-        if (
-            isinstance(
-                tool_choice, (ClaudeToolChoiceAuto, ClaudeToolChoiceAny, ClaudeToolChoiceTool)
+
+def _convert_claude_messages_to_responses_input(
+    messages: Sequence[ClaudeMessage],
+) -> List[Dict[str, Any]]:
+    input_items: List[Dict[str, Any]] = []
+    for message in messages:
+        if message.role == Constants.ROLE_USER:
+            input_items.extend(_convert_claude_user_message_to_responses_items(message))
+            continue
+        if message.role == Constants.ROLE_ASSISTANT:
+            input_items.extend(_convert_claude_assistant_message_to_responses_items(message))
+            continue
+        raise ValueError(f"Unsupported role '{message.role}' in Claude message history")
+    return input_items
+
+
+def _convert_claude_user_message_to_responses_items(
+    message: ClaudeMessage,
+) -> List[Dict[str, Any]]:
+    if isinstance(message.content, str):
+        return [
+            _responses_message_item(
+                Constants.ROLE_USER, [{"type": "input_text", "text": message.content}]
             )
-            and tool_choice.disable_parallel_tool_use is not None
-        ):
-            openai_request["parallel_tool_calls"] = not tool_choice.disable_parallel_tool_use
-    logger.debug(
-        "Converted Claude request to OpenAI format: %s",
-        json.dumps(openai_request, ensure_ascii=False),
-    )
-    return openai_request
+        ]
 
+    output_items: List[Dict[str, Any]] = []
+    pending_parts: List[Dict[str, Any]] = []
 
-def convert_claude_user_message(msg: ClaudeMessage) -> List[Dict[str, Any]]:
-    """Convert one Claude user message into one or more OpenAI messages."""
-    if isinstance(msg.content, str):
-        return [{"role": Constants.ROLE_USER, "content": msg.content}]
-
-    converted_messages: List[Dict[str, Any]] = []
-    pending_user_blocks: List[UserContentBlock] = []
-
-    for block in msg.content:
+    for block in message.content:
         if isinstance(block, ClaudeContentBlockToolResult):
-            if pending_user_blocks:
-                converted_messages.append(
-                    {
-                        "role": Constants.ROLE_USER,
-                        "content": _convert_user_content_blocks(pending_user_blocks),
-                    }
-                )
-                pending_user_blocks = []
-
-            tool_text = parse_tool_result_content(block.content)
-            if block.is_error:
-                tool_text = f"__tool_error__\n{tool_text}"
-
-            converted_messages.append(
+            if pending_parts:
+                output_items.append(_responses_message_item(Constants.ROLE_USER, pending_parts))
+                pending_parts = []
+            output_items.append(
                 {
-                    "role": Constants.ROLE_TOOL,
-                    "tool_call_id": block.tool_use_id,
-                    "content": tool_text,
+                    "type": "function_call_output",
+                    "call_id": block.tool_use_id,
+                    "output": parse_tool_result_content(block.content),
                 }
             )
             continue
 
-        pending_user_blocks.append(_as_user_content_block(block))
+        pending_parts.extend(_convert_user_block_to_responses_parts(_as_user_content_block(block)))
 
-    if pending_user_blocks or not converted_messages:
-        converted_messages.append(
-            {
-                "role": Constants.ROLE_USER,
-                "content": _convert_user_content_blocks(pending_user_blocks),
-            }
-        )
+    if pending_parts or not output_items:
+        output_items.append(_responses_message_item(Constants.ROLE_USER, pending_parts))
 
-    return converted_messages
+    return output_items
 
 
-def convert_claude_assistant_message(msg: ClaudeMessage) -> Dict[str, Any]:
-    """Convert Claude assistant message to OpenAI format."""
-    if isinstance(msg.content, str):
-        return {"role": Constants.ROLE_ASSISTANT, "content": msg.content}
+def _convert_claude_assistant_message_to_responses_items(
+    message: ClaudeMessage,
+) -> List[Dict[str, Any]]:
+    if isinstance(message.content, str):
+        return [
+            _responses_message_item(
+                Constants.ROLE_ASSISTANT,
+                [{"type": "input_text", "text": message.content}],
+            )
+        ]
 
+    output_items: List[Dict[str, Any]] = []
     text_parts: List[str] = []
-    tool_calls: List[Dict[str, Any]] = []
 
-    for block in msg.content:
+    def flush_assistant_text() -> None:
+        if not text_parts:
+            return
+        output_items.append(
+            _responses_message_item(
+                Constants.ROLE_ASSISTANT,
+                [{"type": "input_text", "text": "".join(text_parts)}],
+            )
+        )
+        text_parts.clear()
+
+    for block in message.content:
         if isinstance(block, ClaudeContentBlockText):
             text_parts.append(block.text)
-            continue
-
-        if isinstance(block, ClaudeContentBlockToolUse):
-            tool_calls.append(
-                {
-                    "id": block.id,
-                    "type": Constants.TOOL_FUNCTION,
-                    Constants.TOOL_FUNCTION: {
-                        "name": block.name,
-                        "arguments": json.dumps(block.input, ensure_ascii=False),
-                    },
-                }
-            )
             continue
 
         if isinstance(block, ClaudeContentBlockThinking):
@@ -254,13 +224,69 @@ def convert_claude_assistant_message(msg: ClaudeMessage) -> Dict[str, Any]:
             text_parts.append("[redacted thinking]")
             continue
 
+        if isinstance(block, ClaudeContentBlockToolUse):
+            flush_assistant_text()
+            output_items.append(
+                {
+                    "type": "function_call",
+                    "call_id": block.id,
+                    "name": block.name,
+                    "arguments": json.dumps(block.input, ensure_ascii=False),
+                }
+            )
+            continue
+
         raise ValueError(f"Unsupported assistant content block type for conversion: {block.type}")
 
-    openai_message: Dict[str, Any] = {"role": Constants.ROLE_ASSISTANT}
-    openai_message["content"] = "".join(text_parts) if text_parts else None
-    if tool_calls:
-        openai_message["tool_calls"] = tool_calls
-    return openai_message
+    flush_assistant_text()
+    return output_items
+
+
+def _responses_message_item(role: str, content_parts: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
+    normalized_parts = [part for part in content_parts if isinstance(part, dict)]
+    if not normalized_parts:
+        normalized_parts = [{"type": "input_text", "text": ""}]
+    return {
+        "type": "message",
+        "role": role,
+        "content": normalized_parts,
+    }
+
+
+def _convert_user_block_to_responses_parts(block: UserContentBlock) -> List[Dict[str, Any]]:
+    if isinstance(block, ClaudeContentBlockText):
+        return [{"type": "input_text", "text": block.text}]
+
+    if isinstance(block, ClaudeContentBlockImage):
+        return [_convert_image_block_to_responses_input(block)]
+
+    if isinstance(block, ClaudeContentBlockDocument):
+        return [{"type": "input_text", "text": _convert_document_block_to_text(block)}]
+
+    raise ValueError(f"Unsupported user content block type for conversion: {block.type}")
+
+
+def _convert_tool_choice_for_responses(tool_choice: Any) -> tuple[Any, Optional[bool]]:
+    parallel_tool_calls: Optional[bool] = None
+
+    if isinstance(tool_choice, ClaudeToolChoiceAuto):
+        tool_choice_value: Any = "auto"
+    elif isinstance(tool_choice, ClaudeToolChoiceAny):
+        tool_choice_value = "required"
+    elif isinstance(tool_choice, ClaudeToolChoiceNone):
+        tool_choice_value = "none"
+    elif isinstance(tool_choice, ClaudeToolChoiceTool):
+        tool_choice_value = {
+            "type": Constants.TOOL_FUNCTION,
+            "name": tool_choice.name,
+        }
+    else:
+        raise ValueError("Unsupported tool_choice value for conversion")
+
+    if getattr(tool_choice, "disable_parallel_tool_use", None) is not None:
+        parallel_tool_calls = not bool(tool_choice.disable_parallel_tool_use)
+
+    return tool_choice_value, parallel_tool_calls
 
 
 def parse_tool_result_content(content: Any) -> str:
@@ -308,29 +334,6 @@ def parse_tool_result_content(content: Any) -> str:
         return json.dumps(content, ensure_ascii=False)
 
     return str(content)
-
-
-def _convert_user_content_blocks(blocks: Sequence[UserContentBlock]) -> Any:
-    if not blocks:
-        return ""
-
-    openai_content: List[Dict[str, Any]] = []
-    for block in blocks:
-        if isinstance(block, ClaudeContentBlockText):
-            openai_content.append({"type": "text", "text": block.text})
-        elif isinstance(block, ClaudeContentBlockImage):
-            openai_content.append(_convert_image_block_to_openai_content(block))
-        elif isinstance(block, ClaudeContentBlockDocument):
-            openai_content.append(
-                {
-                    "type": "text",
-                    "text": _convert_document_block_to_text(block),
-                }
-            )
-
-    if len(openai_content) == 1 and openai_content[0]["type"] == "text":
-        return openai_content[0]["text"]
-    return openai_content
 
 
 def _convert_document_block_to_text(block: ClaudeContentBlockDocument) -> str:
@@ -388,19 +391,19 @@ def _convert_document_dict_to_text(document_block: Dict[str, Any]) -> str:
     return text
 
 
-def _convert_image_block_to_openai_content(
+def _convert_image_block_to_responses_input(
     block: ClaudeContentBlockImage,
 ) -> Dict[str, Any]:
     source = block.source
     if source.type == "base64":
         return {
-            "type": "image_url",
-            "image_url": {"url": f"data:{source.media_type};base64,{source.data}"},
+            "type": "input_image",
+            "image_url": f"data:{source.media_type};base64,{source.data}",
         }
     if source.type == "url":
         return {
-            "type": "image_url",
-            "image_url": {"url": source.url},
+            "type": "input_image",
+            "image_url": source.url,
         }
     raise ValueError(f"Unsupported image source type for conversion: {source.type}")
 
@@ -418,7 +421,7 @@ def _convert_system_content(
     )
 
 
-def _convert_tool_definition(tool: ClaudeTool) -> Dict[str, Any]:
+def _convert_function_tool_definition(tool: ClaudeTool) -> Dict[str, Any]:
     if isinstance(tool, ClaudeFunctionTool):
         function_payload: Dict[str, Any] = {
             "name": tool.name,
@@ -433,21 +436,9 @@ def _convert_tool_definition(tool: ClaudeTool) -> Dict[str, Any]:
         }
 
     if isinstance(tool, ClaudeWebSearchTool):
-        web_search_payload: Dict[str, Any] = {
-            "type": tool.type,
-            "name": tool.name,
-        }
-        if tool.max_uses is not None:
-            web_search_payload["max_uses"] = tool.max_uses
-        if tool.allowed_domains is not None:
-            web_search_payload["allowed_domains"] = tool.allowed_domains
-        if tool.blocked_domains is not None:
-            web_search_payload["blocked_domains"] = tool.blocked_domains
-        if tool.user_location is not None:
-            web_search_payload["user_location"] = tool.user_location.model_dump(exclude_none=True)
-        if tool.cache_control is not None:
-            web_search_payload["cache_control"] = tool.cache_control.model_dump(exclude_none=True)
-        return web_search_payload
+        raise ValueError(
+            "Native web_search tool variants are not supported for /v1/messages in Responses-only mode."
+        )
 
     raise ValueError("Unsupported tool definition for conversion")
 
@@ -464,17 +455,6 @@ def _as_user_content_block(block: ClaudeMessageContentBlock) -> UserContentBlock
         return block
 
     raise ValueError(f"Unsupported user content block type for conversion: {block.type}")
-
-
-def _uses_max_completion_tokens(openai_model: str) -> bool:
-    model_name = openai_model.lower()
-    reasoning_prefixes = ("o1", "o3", "o4", "gpt-5")
-    return model_name.startswith(reasoning_prefixes)
-
-
-def _supports_extension_passthrough(base_url: str) -> bool:
-    normalized = base_url.lower()
-    return "api.openai.com" not in normalized and "openai.azure.com" not in normalized
 
 
 def _map_thinking_budget_to_reasoning_effort(budget_tokens: Optional[int]) -> str:

@@ -23,11 +23,7 @@ def _is_anthropic_path(path: str) -> bool:
 
 
 def _is_openai_path(path: str) -> bool:
-    return (
-        path.startswith("/v1/chat/completions")
-        or path.startswith("/v1/responses")
-        or path.startswith("/v1/models")
-    )
+    return path.startswith("/v1/models")
 
 
 def _extract_request_id(detail: object) -> str:

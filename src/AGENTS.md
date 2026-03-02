@@ -13,11 +13,11 @@
 
 ## MODULE MAP
 - `main.py`: FastAPI app, exception shape adapters, uvicorn launcher.
-- `api/endpoints.py`: Anthropic/OpenAI routes, request validation, stream/non-stream dispatch.
+- `api/endpoints.py`: Anthropic `/v1/messages` + `/v1/messages/count_tokens`, OpenAI-compatible model routes, request validation, stream/non-stream dispatch.
 - `core/config.py`: env loading, runtime defaults, import-time validation gate.
 - `core/client.py`: async provider transport, error mapping, cancellation primitives.
 - `core/model_manager.py`: Claude model-name mapping rules.
-- `conversion/request_converter.py`: Claude payload/tool/result conversion to OpenAI format.
+- `conversion/request_converter.py`: Claude payload/tool/result conversion to OpenAI Responses format.
 - `conversion/response_converter.py`: OpenAI responses/SSE conversion to Claude format.
 - `models/claude.py`: strict request schemas and role/content validators.
 - `models/openai.py`: permissive request models for OpenAI-compatible endpoints.

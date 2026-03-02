@@ -4,9 +4,9 @@
 `endpoints.py` hosts Anthropic-compatible and OpenAI-compatible HTTP surfaces plus validation/cancellation glue.
 
 ## WHERE TO LOOK
-- Route entrypoints: `create_message`, `count_tokens`, `create_chat_completion_openai`, `create_responses_openai`.
+- Route entrypoints: `create_message`, `count_tokens`, `list_models_openai`, `get_model_openai`.
 - Validation gates: `validate_api_contract` and `validate_openai_api_contract`.
-- Disconnect handling: `_create_chat_completion_with_disconnect_cancellation` and `_wait_for_http_disconnect`.
+- Disconnect handling: `_create_response_with_disconnect_cancellation` and `_wait_for_http_disconnect`.
 - Error shaping: `_anthropic_error_response`, `_openai_error_response`, status-type mappers.
 
 ## LOCAL CONTRACTS
@@ -15,7 +15,7 @@
 - Response headers must include both `request-id` and `x-request-id` on success and errors.
 - Streaming `/v1/messages` delegates SSE conversion to `convert_openai_streaming_to_claude_with_cancellation`.
 - Non-stream `/v1/messages` path must keep disconnect-aware cancellation behavior.
-- `/v1/responses` is implemented as an adapter over chat completions; keep mapping logic aligned both ways.
+- Removed generation surfaces: `POST /v1/chat/completions` and `POST /v1/responses` return 404.
 
 ## CONVENTIONS
 - Keep Anthropic and OpenAI error payload shapes distinct and status-appropriate.

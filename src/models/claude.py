@@ -196,6 +196,38 @@ class ClaudeMetadata(StrictBaseModel):
     user_id: Optional[str] = None
 
 
+class ClaudeThinkingTurnsKeep(StrictBaseModel):
+    type: Literal["thinking_turns"]
+    value: int = Field(ge=1)
+
+
+class ClaudeContextEditClearThinking(StrictBaseModel):
+    type: Literal["clear_thinking_20251015"]
+    keep: Optional[Union[Literal["all"], ClaudeThinkingTurnsKeep]] = None
+
+
+class ClaudeContextEditClearToolUses(StrictBaseModel):
+    type: Literal["clear_tool_uses_20250919"]
+
+
+ClaudeContextEdit = Annotated[
+    Union[ClaudeContextEditClearThinking, ClaudeContextEditClearToolUses],
+    Field(discriminator="type"),
+]
+
+
+class ClaudeContextManagement(StrictBaseModel):
+    edits: List[ClaudeContextEdit] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def validate_edit_order(self) -> "ClaudeContextManagement":
+        if len(self.edits) > 1 and self.edits[0].type != "clear_thinking_20251015":
+            raise ValueError(
+                "clear_thinking_20251015 must be the first context_management edit when combining edits"
+            )
+        return self
+
+
 class ClaudeThinkingConfig(StrictBaseModel):
     type: Literal["enabled", "disabled"]
     budget_tokens: Optional[int] = Field(default=None, ge=1)
@@ -249,6 +281,7 @@ class _ClaudeMessagesRequestFields(BaseModel):
     thinking: Optional[ClaudeThinkingConfig] = None
     service_tier: Optional[str] = None
     inference_geo: Optional[Dict[str, Any]] = None
+    context_management: Optional[ClaudeContextManagement] = None
 
     @model_validator(mode="after")
     def validate_tool_choice(self) -> "_ClaudeMessagesRequestFields":
@@ -274,6 +307,7 @@ class _ClaudeTokenCountRequestFields(BaseModel):
     tools: Optional[List[ClaudeTool]] = None
     thinking: Optional[ClaudeThinkingConfig] = None
     tool_choice: Optional[ClaudeToolChoice] = None
+    context_management: Optional[ClaudeContextManagement] = None
 
 
 class ClaudeTokenCountRequest(StrictBaseModel, _ClaudeTokenCountRequestFields):

@@ -11,27 +11,23 @@ from typing import Any, Dict, List, Optional
 
 import httpx
 from dotenv import load_dotenv
+from fastapi import HTTPException
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 load_dotenv(PROJECT_ROOT / ".env")
 
-from src.api.endpoints import (
-    _is_supported_openai_model_id,
-    _normalize_openai_usage,
-    _openai_chat_stream_to_responses_events,
-    _responses_input_to_chat_messages,
-    _responses_request_to_chat_request,
-    _responses_uses_max_completion_tokens,
-)
+from src.api.endpoints import _is_supported_openai_model_id
 from src.conversion.request_converter import convert_claude_to_openai, parse_tool_result_content
-from src.conversion.response_converter import convert_openai_streaming_to_claude
+from src.conversion.response_converter import (
+    convert_openai_streaming_to_claude,
+    convert_openai_to_claude_response,
+)
 from src.core.config import config
 from src.core.logging import logger
 from src.core.model_manager import model_manager
 from src.models.claude import parse_claude_messages_request
-from src.models.openai import OpenAIResponsesRequest
 
 BASE_URL = os.getenv("BASE_URL", "http://localhost:8000")
 CLIENT_API_KEY = os.getenv("ANTHROPIC_API_KEY", "test-key")
@@ -46,7 +42,45 @@ OPENAI_HEADERS = {
     "content-type": "application/json",
 }
 
-_PROVIDER_REACHABLE: Optional[bool] = None
+ANTHROPIC_MODEL = os.getenv("ANTHROPIC_MODEL", config.middle_model)
+ANTHROPIC_STREAM_MODEL = os.getenv("ANTHROPIC_STREAM_MODEL", config.small_model)
+
+
+def _extract_model_ids_from_models_payload(payload: Dict[str, Any]) -> List[str]:
+    data = payload.get("data")
+    if not isinstance(data, list):
+        return []
+    model_ids: List[str] = []
+    for item in data:
+        if not isinstance(item, dict):
+            continue
+        model_id = item.get("id")
+        if isinstance(model_id, str) and model_id:
+            model_ids.append(model_id)
+    return model_ids
+
+
+async def _resolve_runtime_models() -> None:
+    global ANTHROPIC_MODEL, ANTHROPIC_STREAM_MODEL
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            response = await client.get(f"{BASE_URL}/v1/models", headers=OPENAI_HEADERS)
+        if response.status_code != 200:
+            return
+        model_ids = _extract_model_ids_from_models_payload(response.json())
+        if not model_ids:
+            return
+        selected = model_ids[0]
+        ANTHROPIC_MODEL = selected
+        ANTHROPIC_STREAM_MODEL = selected
+    except Exception:
+        return
+
+
+def _build_claude_request_model(payload: Dict[str, Any]) -> Any:
+    return parse_claude_messages_request(
+        payload, allow_unknown_fields=config.anthropic_allow_unknown_fields
+    )
 
 
 def _pretty(payload: Dict[str, Any]) -> str:
@@ -188,19 +222,13 @@ async def _collect_sse_events(
     output_lines: List[str] = []
     async for line in convert_openai_streaming_to_claude(generator, request_model, logger):
         output_lines.append(line)
+
     split_lines: List[str] = []
     for payload_line in output_lines:
         split_lines.extend(payload_line.splitlines())
         split_lines.append("")
+
     return _extract_stream_events(split_lines)
-
-
-async def _collect_responses_adapter_events(lines: List[str]) -> List[Dict[str, Any]]:
-    output_lines: List[str] = []
-    async for line in _openai_chat_stream_to_responses_events(_iter_lines(lines)):
-        output_lines.extend(line.splitlines())
-        output_lines.append("")
-    return _extract_stream_events(output_lines)
 
 
 async def _provider_is_reachable() -> bool:
@@ -213,8 +241,7 @@ async def _provider_is_reachable() -> bool:
 
 
 async def _require_provider_or_skip(test_name: str) -> bool:
-    reachable = await _provider_is_reachable()
-    if reachable:
+    if await _provider_is_reachable():
         return True
 
     print(f"- {test_name} skipped (upstream provider unavailable)")
@@ -226,7 +253,7 @@ async def test_missing_anthropic_version_header() -> None:
         response = await client.post(
             f"{BASE_URL}/v1/messages",
             json={
-                "model": "claude-3-5-sonnet-20241022",
+                "model": ANTHROPIC_MODEL,
                 "max_tokens": 32,
                 "messages": [{"role": "user", "content": "hello"}],
             },
@@ -240,7 +267,7 @@ async def test_unknown_fields_rejected_with_anthropic_error_shape() -> None:
         response = await _post_messages(
             client,
             {
-                "model": "claude-3-5-sonnet-20241022",
+                "model": ANTHROPIC_MODEL,
                 "max_tokens": 32,
                 "messages": [{"role": "user", "content": "hello"}],
                 "unknown_field": True,
@@ -254,7 +281,7 @@ async def test_invalid_role_content_rejected_with_anthropic_error_shape() -> Non
         response = await _post_messages(
             client,
             {
-                "model": "claude-3-5-sonnet-20241022",
+                "model": ANTHROPIC_MODEL,
                 "max_tokens": 32,
                 "messages": [
                     {
@@ -279,7 +306,7 @@ async def test_anthropic_large_request_returns_413() -> None:
         response = await _post_messages(
             client,
             {
-                "model": "claude-3-5-sonnet-20241022",
+                "model": ANTHROPIC_MODEL,
                 "max_tokens": 32,
                 "messages": [{"role": "user", "content": huge_text}],
             },
@@ -293,7 +320,7 @@ async def test_token_count_endpoint_header_and_response_shape() -> None:
         response = await _post_count_tokens(
             client,
             {
-                "model": "claude-3-5-sonnet-20241022",
+                "model": ANTHROPIC_MODEL,
                 "messages": [{"role": "user", "content": "Count this"}],
             },
         )
@@ -307,7 +334,7 @@ async def test_token_count_endpoint_header_and_response_shape() -> None:
 async def test_token_count_includes_tools_and_thinking() -> None:
     async with httpx.AsyncClient() as client:
         payload = {
-            "model": "claude-3-5-sonnet-20241022",
+            "model": ANTHROPIC_MODEL,
             "messages": [{"role": "user", "content": "Count tools and thinking"}],
             "tools": [
                 {
@@ -339,30 +366,10 @@ async def test_token_count_includes_tools_and_thinking() -> None:
         assert value_with_tools >= baseline_tokens, (value_with_tools, baseline_tokens)
 
 
-async def test_token_count_accepts_native_web_search_tool() -> None:
-    async with httpx.AsyncClient() as client:
-        payload = {
-            "model": "claude-3-5-sonnet-20241022",
-            "messages": [{"role": "user", "content": "Count web search"}],
-            "tools": [
-                {
-                    "type": "web_search_20250305",
-                    "name": "web_search",
-                    "max_uses": 3,
-                }
-            ],
-            "tool_choice": {"type": "auto"},
-        }
-        response = await _post_count_tokens(client, payload)
-        assert response.status_code == 200, response.text
-        value = response.json().get("input_tokens")
-        assert isinstance(value, int) and value > 0, response.text
-
-
 async def test_token_count_rejects_web_search_conflicting_domain_filters() -> None:
     async with httpx.AsyncClient() as client:
         payload = {
-            "model": "claude-3-5-sonnet-20241022",
+            "model": ANTHROPIC_MODEL,
             "messages": [{"role": "user", "content": "Count web search"}],
             "tools": [
                 {
@@ -377,45 +384,10 @@ async def test_token_count_rejects_web_search_conflicting_domain_filters() -> No
         _assert_anthropic_error_shape(response, expected_status=400)
 
 
-async def test_messages_native_web_search_skips_schema_validation_errors() -> None:
-    if not await _require_provider_or_skip("native web_search request parse check"):
-        return
-    async with httpx.AsyncClient(timeout=60) as client:
-        try:
-            response = await _post_messages(
-                client,
-                {
-                    "model": "claude-3-5-sonnet-20241022",
-                    "max_tokens": 64,
-                    "messages": [{"role": "user", "content": "Use web search if needed."}],
-                    "tools": [
-                        {
-                            "type": "web_search_20250305",
-                            "name": "web_search",
-                            "max_uses": 3,
-                        }
-                    ],
-                    "tool_choice": {"type": "auto"},
-                },
-            )
-        except httpx.TimeoutException:
-            print("- native web_search request parse check skipped (upstream provider timeout)")
-            return
-        if _is_upstream_unavailable(response):
-            print("- native web_search request parse check skipped (upstream provider unavailable)")
-            return
-        _assert_request_id_headers(response)
-        if response.status_code == 400:
-            payload = _assert_anthropic_error_shape(response, expected_status=400)
-            message = payload.get("error", {}).get("message", "")
-            assert "input_schema" not in message, payload
-            assert "extra_forbidden" not in message, payload
-            assert "('tools'," not in message, payload
-
-
 async def test_streaming_event_order_and_shapes() -> None:
     if not await _require_provider_or_skip("streaming event order check"):
         return
+
     lines: List[str] = []
     try:
         async with httpx.AsyncClient(timeout=60) as client:
@@ -424,7 +396,7 @@ async def test_streaming_event_order_and_shapes() -> None:
                 f"{BASE_URL}/v1/messages",
                 headers=ANTHROPIC_HEADERS,
                 json={
-                    "model": "claude-3-5-haiku-20241022",
+                    "model": ANTHROPIC_STREAM_MODEL,
                     "max_tokens": 96,
                     "messages": [{"role": "user", "content": "Tell me a short joke."}],
                     "stream": True,
@@ -464,12 +436,13 @@ async def test_streaming_event_order_and_shapes() -> None:
 async def test_non_stream_response_shape() -> None:
     if not await _require_provider_or_skip("non-stream response shape check"):
         return
+
     async with httpx.AsyncClient(timeout=60) as client:
         try:
             response = await _post_messages(
                 client,
                 {
-                    "model": "claude-3-5-sonnet-20241022",
+                    "model": ANTHROPIC_MODEL,
                     "max_tokens": 64,
                     "messages": [{"role": "user", "content": "Say hi"}],
                 },
@@ -477,9 +450,11 @@ async def test_non_stream_response_shape() -> None:
         except httpx.TimeoutException:
             print("- non-stream response shape check skipped (upstream provider timeout)")
             return
+
         if _is_upstream_unavailable(response):
             print("- non-stream response shape check skipped (upstream provider unavailable)")
             return
+
         assert response.status_code == 200, response.text
         _assert_request_id_headers(response)
         payload = response.json()
@@ -495,353 +470,70 @@ async def test_non_stream_response_shape() -> None:
             "pause_turn",
             "refusal",
             "model_context_window_exceeded",
+            "error",
         }, _pretty(payload)
 
 
-async def test_openai_chat_completion_non_stream_shape() -> None:
-    if not await _require_provider_or_skip("openai chat non-stream endpoint check"):
-        return
+async def test_openai_chat_completion_endpoint_removed() -> None:
     async with httpx.AsyncClient() as client:
-        try:
-            response = await _post_openai_chat(
-                client,
-                {
-                    "model": config.small_model,
-                    "messages": [{"role": "user", "content": "Say hi"}],
-                    "max_tokens": 32,
-                },
-            )
-        except httpx.TimeoutException:
-            print("- openai chat non-stream endpoint check skipped (upstream provider timeout)")
-            return
-        if _is_upstream_unavailable(response):
-            print("- openai chat non-stream endpoint check skipped (upstream provider unavailable)")
-            return
-        assert response.status_code == 200, response.text
-        _assert_request_id_headers(response)
-        payload = response.json()
-        assert payload.get("object") == "chat.completion", _pretty(payload)
-        assert isinstance(payload.get("choices"), list), _pretty(payload)
+        response = await _post_openai_chat(
+            client,
+            {
+                "model": config.small_model,
+                "messages": [{"role": "user", "content": "Say hi"}],
+                "max_tokens": 32,
+            },
+        )
+
+    payload = _assert_openai_error_shape(response, expected_status=404)
+    assert payload["error"].get("code") == "not_found", payload
 
 
-async def test_openai_chat_stream_uses_done_protocol() -> None:
-    if not await _require_provider_or_skip("openai chat streaming protocol check"):
-        return
-    lines: List[str] = []
-    try:
-        async with httpx.AsyncClient(timeout=60) as client:
-            async with client.stream(
-                "POST",
-                f"{BASE_URL}/v1/chat/completions",
-                headers=OPENAI_HEADERS,
-                json={
-                    "model": config.small_model,
-                    "messages": [{"role": "user", "content": "Tell me a short joke."}],
-                    "stream": True,
-                    "max_tokens": 64,
-                },
-            ) as response:
-                if _is_upstream_unavailable(response):
-                    print(
-                        "- openai chat streaming protocol check skipped (upstream provider unavailable)"
-                    )
-                    return
-                assert response.status_code == 200, response.text
-                _assert_request_id_headers(response)
-                lines = [line async for line in response.aiter_lines() if line.strip()]
-    except httpx.TimeoutException:
-        print("- openai chat streaming protocol check skipped (upstream provider timeout)")
-        return
-
-    assert lines, lines
-    assert any(line.strip() == "data: [DONE]" for line in lines), lines
-
-
-async def test_openai_responses_non_stream_shape() -> None:
-    if not await _require_provider_or_skip("openai responses non-stream endpoint check"):
-        return
+async def test_openai_chat_stream_endpoint_removed() -> None:
     async with httpx.AsyncClient() as client:
-        try:
-            response = await _post_openai_responses(
-                client,
-                {
-                    "model": config.small_model,
-                    "input": "Say hello in one sentence",
-                    "max_output_tokens": 32,
-                },
-            )
-        except httpx.TimeoutException:
-            print(
-                "- openai responses non-stream endpoint check skipped (upstream provider timeout)"
-            )
-            return
-        if _is_upstream_unavailable(response):
-            print(
-                "- openai responses non-stream endpoint check skipped (upstream provider unavailable)"
-            )
-            return
-        assert response.status_code == 200, response.text
-        _assert_request_id_headers(response)
-        payload = response.json()
-        assert payload.get("object") == "response", _pretty(payload)
-        assert payload.get("status") == "completed", _pretty(payload)
-        output = payload.get("output")
-        assert isinstance(output, list), _pretty(payload)
-        assert output, _pretty(payload)
-        first_item = output[0]
-        assert isinstance(first_item, dict), _pretty(payload)
-        assert isinstance(payload.get("usage"), dict), _pretty(payload)
-        if first_item.get("type") == "message":
-            content = first_item.get("content")
-            assert isinstance(content, list), _pretty(payload)
-            if content:
-                first_content = content[0]
-                assert isinstance(first_content, dict), _pretty(payload)
-                assert first_content.get("type") == "output_text", _pretty(payload)
+        response = await _post_openai_chat(
+            client,
+            {
+                "model": config.small_model,
+                "messages": [{"role": "user", "content": "Tell me a short joke."}],
+                "stream": True,
+                "max_tokens": 64,
+            },
+        )
+
+    payload = _assert_openai_error_shape(response, expected_status=404)
+    assert payload["error"].get("code") == "not_found", payload
 
 
-async def test_openai_responses_stream_events() -> None:
-    if not await _require_provider_or_skip("openai responses streaming events check"):
-        return
-    lines: List[str] = []
-    try:
-        async with httpx.AsyncClient(timeout=60) as client:
-            async with client.stream(
-                "POST",
-                f"{BASE_URL}/v1/responses",
-                headers=OPENAI_HEADERS,
-                json={
-                    "model": config.small_model,
-                    "input": "Say hello",
-                    "stream": True,
-                    "max_output_tokens": 32,
-                },
-            ) as response:
-                if _is_upstream_unavailable(response):
-                    print(
-                        "- openai responses streaming events check skipped (upstream provider unavailable)"
-                    )
-                    return
-                assert response.status_code == 200, response.text
-                _assert_request_id_headers(response)
-                lines = [line async for line in response.aiter_lines()]
-    except httpx.TimeoutException:
-        print("- openai responses streaming events check skipped (upstream provider timeout)")
-        return
+async def test_openai_responses_endpoint_removed() -> None:
+    async with httpx.AsyncClient() as client:
+        response = await _post_openai_responses(
+            client,
+            {
+                "model": config.small_model,
+                "input": "Say hello in one sentence",
+                "max_output_tokens": 32,
+            },
+        )
 
-    events = _extract_stream_events(lines)
-    event_names = [item["event"] for item in events]
-    assert "response.created" in event_names, event_names
-    assert "response.in_progress" in event_names, event_names
-    assert (
-        "response.output_text.delta" in event_names or "response.output_text.done" in event_names
-    ), event_names
-    assert "response.completed" in event_names, event_names
-
-    created_index = event_names.index("response.created")
-    progress_index = event_names.index("response.in_progress")
-    completed_index = event_names.index("response.completed")
-    assert created_index < progress_index < completed_index, event_names
-
-    if "response.output_item.added" in event_names and "response.output_item.done" in event_names:
-        assert (
-            event_names.index("response.output_item.added")
-            < event_names.index("response.output_item.done")
-            < completed_index
-        ), event_names
-
-    completed_events = [event for event in events if event["event"] == "response.completed"]
-    assert completed_events, event_names
-    completed_payload = completed_events[-1]["data"]
-    assert isinstance(completed_payload.get("response"), dict), completed_payload
-    assert isinstance(completed_payload["response"].get("id"), str), completed_payload
-    for event in events:
-        if event["event"] != "error":
-            assert isinstance(event["data"].get("sequence_number"), int), event
+    payload = _assert_openai_error_shape(response, expected_status=404)
+    assert payload["error"].get("code") == "not_found", payload
 
 
-async def test_openai_responses_function_call_events_from_mock_stream() -> None:
-    stream_lines = [
-        'data: {"id":"chatcmpl_mock","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_weather","function":{"name":"weather"}}]}}]}',
-        'data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\\"city\\":\\""}}]}}]}',
-        'data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"Helsinki"}}]}}]}',
-        'data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\\"}"}}]}}]}',
-        'data: {"choices":[{"index":0,"finish_reason":"tool_calls"}]}',
-        "data: [DONE]",
-    ]
+async def test_openai_responses_stream_endpoint_removed() -> None:
+    async with httpx.AsyncClient() as client:
+        response = await _post_openai_responses(
+            client,
+            {
+                "model": config.small_model,
+                "input": "Say hello",
+                "stream": True,
+                "max_output_tokens": 32,
+            },
+        )
 
-    events = await _collect_responses_adapter_events(stream_lines)
-    event_names = [event["event"] for event in events]
-    assert "response.created" in event_names, event_names
-    assert "response.in_progress" in event_names, event_names
-    assert "response.completed" in event_names, event_names
-    assert "response.output_item.added" in event_names, event_names
-    assert "response.function_call_arguments.delta" in event_names, event_names
-    assert "response.function_call_arguments.done" in event_names, event_names
-    assert "response.output_item.done" in event_names, event_names
-    if any(
-        event.get("data", {}).get("item", {}).get("type") == "message"
-        for event in events
-        if event["event"] == "response.output_item.added"
-    ):
-        assert "response.content_part.added" in event_names, event_names
-        assert "response.content_part.done" in event_names, event_names
-
-    tool_added = [
-        event
-        for event in events
-        if event["event"] == "response.output_item.added"
-        and isinstance(event.get("data", {}).get("item"), dict)
-        and event["data"]["item"].get("type") == "function_call"
-    ]
-    assert tool_added, events
-    assert tool_added[0]["data"]["item"].get("name") == "weather", tool_added[0]
-
-    arg_deltas = [
-        event["data"].get("delta", "")
-        for event in events
-        if event["event"] == "response.function_call_arguments.delta"
-    ]
-    assert "".join(arg_deltas) == '{"city":"Helsinki"}', arg_deltas
-
-    arg_done = [
-        event for event in events if event["event"] == "response.function_call_arguments.done"
-    ]
-    assert arg_done, events
-    assert arg_done[-1]["data"].get("arguments") == '{"city":"Helsinki"}', arg_done[-1]
-
-
-async def test_responses_request_token_field_mapping_by_model_family() -> None:
-    chat_messages = [{"role": "user", "content": "hello"}]
-    assert _responses_uses_max_completion_tokens("gpt-5.2") is True
-    assert _responses_uses_max_completion_tokens("o3-mini") is True
-    assert _responses_uses_max_completion_tokens("gpt-4o-mini") is False
-
-    reasoning_request = OpenAIResponsesRequest(
-        model="gpt-5.2",
-        input="hello",
-        max_output_tokens=77,
-        stream=False,
-    )
-    reasoning_chat = _responses_request_to_chat_request(reasoning_request, chat_messages)
-    assert reasoning_chat.get("max_completion_tokens") == 77, reasoning_chat
-    assert "max_tokens" not in reasoning_chat, reasoning_chat
-
-    standard_request = OpenAIResponsesRequest(
-        model="gpt-4o-mini",
-        input="hello",
-        max_output_tokens=33,
-        stream=False,
-    )
-    standard_chat = _responses_request_to_chat_request(standard_request, chat_messages)
-    assert standard_chat.get("max_tokens") == 33, standard_chat
-    assert "max_completion_tokens" not in standard_chat, standard_chat
-
-
-async def test_responses_input_image_and_content_normalization() -> None:
-    messages = _responses_input_to_chat_messages(
-        {
-            "role": "user",
-            "content": [
-                {"type": "input_text", "text": "Describe"},
-                {
-                    "type": "input_image",
-                    "image_url": {
-                        "url": "https://example.com/image.png",
-                        "detail": "high",
-                    },
-                },
-            ],
-        }
-    )
-    assert len(messages) == 1, messages
-    content = messages[0].get("content")
-    assert isinstance(content, list), messages[0]
-    text_blocks = [
-        block for block in content if isinstance(block, dict) and block.get("type") == "text"
-    ]
-    image_blocks = [
-        block for block in content if isinstance(block, dict) and block.get("type") == "image_url"
-    ]
-    assert text_blocks and text_blocks[0].get("text") == "Describe", content
-    assert image_blocks, content
-    assert (
-        image_blocks[0].get("image_url", {}).get("url") == "https://example.com/image.png"
-    ), content
-    assert image_blocks[0].get("image_url", {}).get("detail") == "high", content
-
-
-async def test_openai_responses_stream_error_event_passthrough() -> None:
-    stream_lines = [
-        'data: {"error":{"type":"server_error","message":"upstream failed"}}',
-        "data: [DONE]",
-    ]
-    events = await _collect_responses_adapter_events(stream_lines)
-    event_names = [event["event"] for event in events]
-    assert "error" in event_names, event_names
-    assert "response.completed" not in event_names, event_names
-    error_event = next(event for event in events if event["event"] == "error")
-    error_payload = error_event.get("data", {}).get("error", {})
-    assert error_payload.get("type") == "server_error", error_event
-    assert error_payload.get("message") == "upstream failed", error_event
-
-
-async def test_openai_responses_tool_output_index_contiguity() -> None:
-    stream_lines = [
-        'data: {"id":"chatcmpl_mock","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_weather","function":{"name":"weather"}}]}}]}',
-        'data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\\"city\\":\\"Helsinki\\"}"}}]}}]}',
-        'data: {"choices":[{"index":0,"finish_reason":"tool_calls"}]}',
-        "data: [DONE]",
-    ]
-    events = await _collect_responses_adapter_events(stream_lines)
-
-    added_events = [event for event in events if event["event"] == "response.output_item.added"]
-    assert added_events, events
-
-    tool_added = next(
-        event
-        for event in added_events
-        if event.get("data", {}).get("item", {}).get("type") == "function_call"
-    )
-    tool_output_index = tool_added.get("data", {}).get("output_index")
-    message_added = next(
-        (
-            event
-            for event in added_events
-            if event.get("data", {}).get("item", {}).get("type") == "message"
-        ),
-        None,
-    )
-    if message_added is not None:
-        assert message_added.get("data", {}).get("output_index") == 0, message_added
-        assert tool_output_index == 1, tool_added
-    else:
-        assert tool_output_index == 0, tool_added
-
-    arg_delta_events = [
-        event for event in events if event["event"] == "response.function_call_arguments.delta"
-    ]
-    assert arg_delta_events, events
-    assert all(
-        event.get("data", {}).get("output_index") == tool_output_index for event in arg_delta_events
-    ), arg_delta_events
-
-
-async def test_openai_usage_normalization_coerces_numeric_strings() -> None:
-    usage = _normalize_openai_usage(
-        {
-            "prompt_tokens": "12",
-            "completion_tokens": "5",
-            "total_tokens": "17",
-            "prompt_tokens_details": {"cached_tokens": "3"},
-            "completion_tokens_details": {"reasoning_tokens": "2"},
-        }
-    )
-    assert usage.get("input_tokens") == 12, usage
-    assert usage.get("output_tokens") == 5, usage
-    assert usage.get("total_tokens") == 17, usage
-    assert usage.get("input_tokens_details", {}).get("cached_tokens") == 3, usage
-    assert usage.get("output_tokens_details", {}).get("reasoning_tokens") == 2, usage
+    payload = _assert_openai_error_shape(response, expected_status=404)
+    assert payload["error"].get("code") == "not_found", payload
 
 
 async def test_openai_model_supports_passthrough_prefixes() -> None:
@@ -877,21 +569,19 @@ async def test_openai_models_missing_returns_openai_error() -> None:
             f"{BASE_URL}/v1/models/not-a-real-model",
             headers=OPENAI_HEADERS,
         )
-        payload = _assert_openai_error_shape(response, expected_status=404)
-        assert payload["error"].get("code") == "model_not_found", payload
+
+    payload = _assert_openai_error_shape(response, expected_status=404)
+    assert payload["error"].get("code") == "model_not_found", payload
 
 
-async def test_openai_auth_required() -> None:
+async def test_openai_models_auth_required() -> None:
     async with httpx.AsyncClient() as client:
-        response = await client.post(
-            f"{BASE_URL}/v1/chat/completions",
+        response = await client.get(
+            f"{BASE_URL}/v1/models",
             headers={"content-type": "application/json"},
-            json={
-                "model": config.small_model,
-                "messages": [{"role": "user", "content": "Hello"}],
-            },
         )
-        _assert_openai_error_shape(response, expected_status=401)
+
+    _assert_openai_error_shape(response, expected_status=401)
 
 
 async def test_anthropic_uses_request_too_large_type_for_413_mapping() -> None:
@@ -910,7 +600,7 @@ async def test_anthropic_uses_request_too_large_type_for_413_mapping() -> None:
 
 async def test_request_converter_supports_image_url_sources() -> None:
     payload = {
-        "model": "claude-3-5-sonnet-20241022",
+        "model": ANTHROPIC_MODEL,
         "max_tokens": 32,
         "messages": [
             {
@@ -928,26 +618,32 @@ async def test_request_converter_supports_image_url_sources() -> None:
             }
         ],
     }
+
     request_model = parse_claude_messages_request(
         payload, allow_unknown_fields=config.anthropic_allow_unknown_fields
     )
     converted = convert_claude_to_openai(request_model, model_manager)
-    messages = converted.get("messages")
-    assert isinstance(messages, list) and len(messages) >= 1, converted
-    first_user = next(message for message in messages if message.get("role") == "user")
+    input_items = converted.get("input")
+    assert isinstance(input_items, list) and input_items, converted
+
+    first_user = next(
+        item
+        for item in input_items
+        if isinstance(item, dict) and item.get("type") == "message" and item.get("role") == "user"
+    )
     content = first_user.get("content")
     assert isinstance(content, list), first_user
-    image_blocks = [
-        block for block in content if isinstance(block, dict) and block.get("type") == "image_url"
+
+    image_parts = [
+        part for part in content if isinstance(part, dict) and part.get("type") == "input_image"
     ]
-    assert image_blocks, first_user
-    image_url = image_blocks[0].get("image_url", {})
-    assert image_url.get("url") == "https://example.com/image.png", first_user
+    assert image_parts, first_user
+    assert image_parts[0].get("image_url") == "https://example.com/image.png", first_user
 
 
-async def test_request_converter_supports_native_web_search_tool() -> None:
+async def test_request_converter_rejects_native_web_search_tool() -> None:
     payload = {
-        "model": "claude-3-5-sonnet-20241022",
+        "model": ANTHROPIC_MODEL,
         "max_tokens": 64,
         "messages": [{"role": "user", "content": "Get current weather"}],
         "tools": [
@@ -955,134 +651,130 @@ async def test_request_converter_supports_native_web_search_tool() -> None:
                 "type": "web_search_20250305",
                 "name": "web_search",
                 "max_uses": 2,
-                "user_location": {
-                    "type": "approximate",
-                    "country": "FI",
-                    "timezone": "Europe/Helsinki",
-                },
             }
         ],
         "tool_choice": {"type": "auto"},
     }
+
     request_model = parse_claude_messages_request(
         payload, allow_unknown_fields=config.anthropic_allow_unknown_fields
     )
-    converted = convert_claude_to_openai(request_model, model_manager)
-    tools = converted.get("tools")
-    assert isinstance(tools, list) and len(tools) == 1, converted
-    web_search_tool = tools[0]
-    assert web_search_tool.get("type") == "web_search_20250305", web_search_tool
-    assert web_search_tool.get("name") == "web_search", web_search_tool
-    assert web_search_tool.get("max_uses") == 2, web_search_tool
-    assert web_search_tool.get("user_location", {}).get("country") == "FI", web_search_tool
-    assert converted.get("tool_choice") == "auto", converted
+    try:
+        convert_claude_to_openai(request_model, model_manager)
+    except ValueError as error:
+        assert "web_search" in str(error), error
+    else:
+        raise AssertionError("Expected web_search tool conversion to be rejected")
 
 
-async def test_request_converter_supports_mixed_function_and_web_search_tools() -> None:
+async def test_request_converter_rejects_context_management() -> None:
     payload = {
-        "model": "claude-3-5-sonnet-20241022",
+        "model": ANTHROPIC_MODEL,
         "max_tokens": 64,
-        "messages": [{"role": "user", "content": "Use available tools"}],
-        "tools": [
-            {
-                "name": "weather",
-                "description": "Get weather for a city",
-                "input_schema": {
-                    "type": "object",
-                    "properties": {"city": {"type": "string"}},
-                    "required": ["city"],
-                },
-            },
-            {
-                "type": "web_search_20250305",
-                "name": "web_search",
-                "max_uses": 1,
-            },
-        ],
-        "tool_choice": {"type": "tool", "name": "weather"},
+        "messages": [{"role": "user", "content": "hello"}],
+        "context_management": {
+            "edits": [
+                {
+                    "type": "clear_thinking_20251015",
+                    "keep": {"type": "thinking_turns", "value": 2},
+                }
+            ]
+        },
     }
+
     request_model = parse_claude_messages_request(
         payload, allow_unknown_fields=config.anthropic_allow_unknown_fields
     )
-    converted = convert_claude_to_openai(request_model, model_manager)
-    tools = converted.get("tools")
-    assert isinstance(tools, list) and len(tools) == 2, converted
-
-    function_tool = tools[0]
-    assert function_tool.get("type") == "function", function_tool
-    assert function_tool.get("function", {}).get("name") == "weather", function_tool
-    assert (
-        function_tool.get("function", {}).get("parameters", {}).get("type") == "object"
-    ), function_tool
-
-    web_search_tool = tools[1]
-    assert web_search_tool.get("type") == "web_search_20250305", web_search_tool
-    assert web_search_tool.get("name") == "web_search", web_search_tool
-    assert web_search_tool.get("max_uses") == 1, web_search_tool
-
-    tool_choice = converted.get("tool_choice")
-    assert isinstance(tool_choice, dict), converted
-    assert tool_choice.get("type") == "function", tool_choice
-    assert tool_choice.get("function", {}).get("name") == "weather", tool_choice
+    try:
+        convert_claude_to_openai(request_model, model_manager)
+    except ValueError as error:
+        assert "context_management" in str(error), error
+    else:
+        raise AssertionError("Expected context_management to be rejected in Responses-only mode")
 
 
-async def test_request_converter_does_not_map_native_web_search_tool_choice_to_function() -> None:
+async def test_request_converter_rejects_top_k() -> None:
     payload = {
-        "model": "claude-3-5-sonnet-20241022",
+        "model": ANTHROPIC_MODEL,
         "max_tokens": 64,
-        "messages": [{"role": "user", "content": "Search for current weather"}],
-        "tools": [
-            {
-                "name": "weather",
-                "description": "Get weather for a city",
-                "input_schema": {
-                    "type": "object",
-                    "properties": {"city": {"type": "string"}},
-                    "required": ["city"],
-                },
-            },
-            {
-                "type": "web_search_20250305",
-                "name": "web_search",
-                "max_uses": 1,
-            },
-        ],
-        "tool_choice": {"type": "tool", "name": "web_search"},
+        "messages": [{"role": "user", "content": "hello"}],
+        "top_k": 5,
     }
+
     request_model = parse_claude_messages_request(
         payload, allow_unknown_fields=config.anthropic_allow_unknown_fields
     )
-    converted = convert_claude_to_openai(request_model, model_manager)
-    assert "tool_choice" not in converted, converted
+    try:
+        convert_claude_to_openai(request_model, model_manager)
+    except ValueError as error:
+        assert "top_k" in str(error), error
+    else:
+        raise AssertionError("Expected top_k to be rejected in Responses-only mode")
 
 
-async def test_tool_result_document_url_and_file_normalization() -> None:
-    normalized = parse_tool_result_content(
-        [
-            {
-                "type": "document",
-                "title": "Reference",
-                "source": {
-                    "type": "url",
-                    "url": "https://example.com/spec",
-                },
-            },
-            {
-                "type": "document",
-                "source": {
-                    "type": "file",
-                    "file_id": "file_123",
-                },
-            },
-        ]
+async def test_request_converter_rejects_stop_sequences() -> None:
+    payload = {
+        "model": ANTHROPIC_MODEL,
+        "max_tokens": 64,
+        "messages": [{"role": "user", "content": "hello"}],
+        "stop_sequences": ["###"],
+    }
+
+    request_model = parse_claude_messages_request(
+        payload, allow_unknown_fields=config.anthropic_allow_unknown_fields
     )
-    assert "https://example.com/spec" in normalized, normalized
-    assert "file_123" in normalized, normalized
+    try:
+        convert_claude_to_openai(request_model, model_manager)
+    except ValueError as error:
+        assert "stop_sequences" in str(error), error
+    else:
+        raise AssertionError("Expected stop_sequences to be rejected in Responses-only mode")
+
+
+async def test_request_converter_rejects_inference_geo() -> None:
+    payload = {
+        "model": ANTHROPIC_MODEL,
+        "max_tokens": 64,
+        "messages": [{"role": "user", "content": "hello"}],
+        "inference_geo": {"type": "approximate", "country": "FI"},
+    }
+
+    request_model = parse_claude_messages_request(
+        payload, allow_unknown_fields=config.anthropic_allow_unknown_fields
+    )
+    try:
+        convert_claude_to_openai(request_model, model_manager)
+    except ValueError as error:
+        assert "inference_geo" in str(error), error
+    else:
+        raise AssertionError("Expected inference_geo to be rejected in Responses-only mode")
+
+
+async def test_streaming_converter_handles_bad_request_before_first_chunk() -> None:
+    request_payload = {
+        "model": ANTHROPIC_MODEL,
+        "max_tokens": 64,
+        "messages": [{"role": "user", "content": "hello"}],
+        "stream": True,
+    }
+
+    async def raising_stream() -> Any:
+        if False:
+            yield "data: ignored"
+        raise HTTPException(status_code=400, detail="Error code: 400 - unsupported parameter")
+
+    events = await _collect_sse_events(raising_stream(), request_payload)
+    assert events, events
+    assert events[0]["event"] == "message_start", events
+    assert events[-1]["event"] == "error", events
+    error_payload = events[-1]["data"].get("error", {})
+    assert error_payload.get("type") == "api_error", events
+    assert "unsupported parameter" in error_payload.get("message", ""), events
 
 
 async def test_streaming_reasoning_and_multichoice_selection() -> None:
     request_payload = {
-        "model": "claude-3-5-sonnet-20241022",
+        "model": ANTHROPIC_MODEL,
         "max_tokens": 64,
         "messages": [{"role": "user", "content": "Think briefly"}],
         "stream": True,
@@ -1094,6 +786,7 @@ async def test_streaming_reasoning_and_multichoice_selection() -> None:
         'data: {"choices":[{"index":0,"finish_reason":"stop"}]}',
         "data: [DONE]",
     ]
+
     events = await _collect_sse_events(_iter_lines(stream_lines), request_payload)
     event_names = [event["event"] for event in events]
     assert "content_block_start" in event_names, event_names
@@ -1125,7 +818,7 @@ async def test_streaming_reasoning_and_multichoice_selection() -> None:
 
 async def test_streaming_tool_call_multidelta_interleaving() -> None:
     request_payload = {
-        "model": "claude-3-5-sonnet-20241022",
+        "model": ANTHROPIC_MODEL,
         "max_tokens": 128,
         "messages": [{"role": "user", "content": "call weather"}],
         "stream": True,
@@ -1138,6 +831,7 @@ async def test_streaming_tool_call_multidelta_interleaving() -> None:
         'data: {"choices":[{"index":0,"finish_reason":"tool_calls"}]}',
         "data: [DONE]",
     ]
+
     events = await _collect_sse_events(_iter_lines(stream_lines), request_payload)
 
     start_events = [
@@ -1184,7 +878,7 @@ async def test_streaming_finish_reason_mapping_matrix() -> None:
 
     for finish_reason, stop_sequence, expected_reason, expected_sequence in cases:
         request_payload = {
-            "model": "claude-3-5-sonnet-20241022",
+            "model": ANTHROPIC_MODEL,
             "max_tokens": 64,
             "messages": [{"role": "user", "content": "test"}],
             "stream": True,
@@ -1203,8 +897,97 @@ async def test_streaming_finish_reason_mapping_matrix() -> None:
         assert delta.get("stop_sequence") == expected_sequence, (finish_reason, events)
 
 
+async def test_tool_result_document_url_and_file_normalization() -> None:
+    normalized = parse_tool_result_content(
+        [
+            {
+                "type": "document",
+                "title": "Reference",
+                "source": {
+                    "type": "url",
+                    "url": "https://example.com/spec",
+                },
+            },
+            {
+                "type": "document",
+                "source": {
+                    "type": "file",
+                    "file_id": "file_123",
+                },
+            },
+        ]
+    )
+    assert "https://example.com/spec" in normalized, normalized
+    assert "file_123" in normalized, normalized
+
+
+def test_request_converter_store_flag_matches_state_mode() -> None:
+    payload = {
+        "model": ANTHROPIC_MODEL,
+        "max_tokens": 64,
+        "messages": [{"role": "user", "content": "hello"}],
+    }
+    request_model = _build_claude_request_model(payload)
+    converted = convert_claude_to_openai(request_model, model_manager)
+    expected_store = config.openai_responses_state_mode == "provider"
+    assert converted.get("store") == expected_store, converted
+
+
+def test_non_stream_converter_maps_responses_output_items() -> None:
+    request_payload = {
+        "model": ANTHROPIC_MODEL,
+        "max_tokens": 64,
+        "messages": [{"role": "user", "content": "hello"}],
+    }
+    request_model = _build_claude_request_model(request_payload)
+    openai_response = {
+        "id": "resp_test_123",
+        "status": "completed",
+        "output": [
+            {
+                "type": "reasoning",
+                "summary": [{"type": "summary_text", "text": "Need weather lookup"}],
+            },
+            {
+                "type": "function_call",
+                "call_id": "call_weather",
+                "name": "weather",
+                "arguments": '{"city":"Helsinki"}',
+            },
+            {
+                "type": "message",
+                "id": "msg_resp_1",
+                "content": [{"type": "output_text", "text": "Here is the weather."}],
+            },
+        ],
+        "usage": {
+            "input_tokens": 12,
+            "output_tokens": 9,
+            "total_tokens": 21,
+        },
+    }
+
+    claude_response = convert_openai_to_claude_response(openai_response, request_model)
+    assert claude_response["id"] == "msg_resp_1", claude_response
+    assert claude_response["type"] == "message", claude_response
+    assert claude_response["role"] == "assistant", claude_response
+    assert claude_response["stop_reason"] == "tool_use", claude_response
+    assert claude_response["usage"]["input_tokens"] == 12, claude_response
+    assert claude_response["usage"]["output_tokens"] == 9, claude_response
+
+    blocks = claude_response["content"]
+    assert isinstance(blocks, list) and blocks, claude_response
+    assert any(block.get("type") == "thinking" for block in blocks), claude_response
+    assert any(block.get("type") == "tool_use" for block in blocks), claude_response
+    assert any(block.get("type") == "text" for block in blocks), claude_response
+
+
 async def main() -> None:
     print("Running strict compatibility integration tests")
+    await _resolve_runtime_models()
+    print(
+        f"Using Anthropic test models: default={ANTHROPIC_MODEL}, stream={ANTHROPIC_STREAM_MODEL}"
+    )
 
     await test_missing_anthropic_version_header()
     print("- missing anthropic-version header check passed")
@@ -1224,29 +1007,37 @@ async def main() -> None:
     await test_token_count_includes_tools_and_thinking()
     print("- count_tokens tools/thinking weighting check passed")
 
-    await test_token_count_accepts_native_web_search_tool()
-    print("- count_tokens native web_search tool check passed")
-
     await test_token_count_rejects_web_search_conflicting_domain_filters()
     print("- count_tokens web_search domain filter validation check passed")
-
-    await test_messages_native_web_search_skips_schema_validation_errors()
-    print("- native web_search /v1/messages parse-path check passed")
 
     await test_request_converter_supports_image_url_sources()
     print("- request converter image url support check passed")
 
-    await test_request_converter_supports_native_web_search_tool()
-    print("- request converter native web_search tool support check passed")
+    await test_request_converter_rejects_native_web_search_tool()
+    print("- request converter native web_search rejection check passed")
 
-    await test_request_converter_supports_mixed_function_and_web_search_tools()
-    print("- request converter mixed function+web_search tool support check passed")
+    await test_request_converter_rejects_context_management()
+    print("- request converter context_management rejection check passed")
 
-    await test_request_converter_does_not_map_native_web_search_tool_choice_to_function()
-    print("- request converter native web_search tool_choice handling check passed")
+    await test_request_converter_rejects_top_k()
+    print("- request converter top_k rejection check passed")
+    await test_request_converter_rejects_stop_sequences()
+    print("- request converter stop_sequences rejection check passed")
+
+    await test_request_converter_rejects_inference_geo()
+    print("- request converter inference_geo rejection check passed")
 
     await test_tool_result_document_url_and_file_normalization()
     print("- tool_result document url/file normalization check passed")
+
+    test_request_converter_store_flag_matches_state_mode()
+    print("- request converter store flag state-mode check passed")
+
+    test_non_stream_converter_maps_responses_output_items()
+    print("- non-stream converter Responses output mapping check passed")
+
+    await test_streaming_converter_handles_bad_request_before_first_chunk()
+    print("- streaming converter pre-first-chunk bad-request handling check passed")
 
     await test_streaming_reasoning_and_multichoice_selection()
     print("- streaming reasoning and multi-choice selection check passed")
@@ -1263,35 +1054,17 @@ async def main() -> None:
     await test_streaming_event_order_and_shapes()
     print("- streaming event order check passed")
 
-    await test_openai_chat_completion_non_stream_shape()
-    print("- openai chat non-stream endpoint check passed")
+    await test_openai_chat_completion_endpoint_removed()
+    print("- openai chat endpoint removed check passed")
 
-    await test_openai_chat_stream_uses_done_protocol()
-    print("- openai chat streaming protocol check passed")
+    await test_openai_chat_stream_endpoint_removed()
+    print("- openai chat stream endpoint removed check passed")
 
-    await test_openai_responses_non_stream_shape()
-    print("- openai responses non-stream endpoint check passed")
+    await test_openai_responses_endpoint_removed()
+    print("- openai responses endpoint removed check passed")
 
-    await test_openai_responses_stream_events()
-    print("- openai responses streaming events check passed")
-
-    await test_openai_responses_function_call_events_from_mock_stream()
-    print("- openai responses function-call mock streaming check passed")
-
-    await test_responses_request_token_field_mapping_by_model_family()
-    print("- responses request token-field mapping check passed")
-
-    await test_responses_input_image_and_content_normalization()
-    print("- responses input_image normalization check passed")
-
-    await test_openai_responses_stream_error_event_passthrough()
-    print("- openai responses stream error-event passthrough check passed")
-
-    await test_openai_responses_tool_output_index_contiguity()
-    print("- openai responses tool output-index continuity check passed")
-
-    await test_openai_usage_normalization_coerces_numeric_strings()
-    print("- openai usage normalization numeric coercion check passed")
+    await test_openai_responses_stream_endpoint_removed()
+    print("- openai responses stream endpoint removed check passed")
 
     await test_openai_model_supports_passthrough_prefixes()
     print("- openai model support-prefix check passed")
@@ -1302,8 +1075,8 @@ async def main() -> None:
     await test_openai_models_missing_returns_openai_error()
     print("- openai model-not-found error shape check passed")
 
-    await test_openai_auth_required()
-    print("- openai auth required check passed")
+    await test_openai_models_auth_required()
+    print("- openai models auth required check passed")
 
     await test_anthropic_uses_request_too_large_type_for_413_mapping()
     print("- anthropic 413 error type mapping check passed")

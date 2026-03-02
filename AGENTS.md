@@ -5,7 +5,7 @@
 **Branch:** main
 
 ## OVERVIEW
-Clay exposes Claude-compatible and OpenAI-compatible chat endpoints and forwards requests to OpenAI-compatible providers.
+Clay exposes Anthropic-compatible generation (`/v1/messages`) plus OpenAI-compatible model discovery endpoints, forwarding generation upstream through OpenAI Responses API.
 Runtime is Python/FastAPI with explicit request validation, model remapping, cancellation-aware transport, and SSE protocol conversion.
 
 ## AGENTS HIERARCHY
@@ -39,7 +39,7 @@ clay/
 | Task | Location | Notes |
 |------|----------|-------|
 | Anthropic request flow | `src/api/endpoints.py` | `/v1/messages` validation, conversion, streaming/non-stream paths |
-| OpenAI-compatible routes | `src/api/endpoints.py` | `/v1/chat/completions`, `/v1/responses`, `/v1/models` |
+| OpenAI-compatible routes | `src/api/endpoints.py` | `/v1/models` only; generation routes removed |
 | Request conversion | `src/conversion/request_converter.py` | Claude blocks/tools/thinking -> OpenAI payload |
 | Stream conversion | `src/conversion/response_converter.py` | SSE event order + tool-call delta reconstruction |
 | Provider transport + cancellation | `src/core/client.py` | async OpenAI calls + `request_id` cancellation map |
@@ -52,8 +52,8 @@ clay/
 | Symbol | Type | Location | Refs | Role |
 |--------|------|----------|------|------|
 | `create_message` | async function | `src/api/endpoints.py` | high | Main Anthropic request lifecycle |
-| `_create_chat_completion_with_disconnect_cancellation` | async function | `src/api/endpoints.py` | medium | Non-stream disconnect cancellation |
-| `OpenAIClient.create_chat_completion_stream` | async method | `src/core/client.py` | high | Streaming provider transport |
+| `_create_response_with_disconnect_cancellation` | async function | `src/api/endpoints.py` | medium | Non-stream disconnect cancellation |
+| `OpenAIClient.create_response_stream` | async method | `src/core/client.py` | high | Streaming Responses provider transport |
 | `convert_claude_to_openai` | function | `src/conversion/request_converter.py` | high | Claude->OpenAI payload translation |
 | `convert_openai_streaming_to_claude_with_cancellation` | async function | `src/conversion/response_converter.py` | high | OpenAI SSE->Claude SSE bridge |
 | `ClaudeMessagesRequest` | class | `src/models/claude.py` | medium | Strict Claude request schema + validators |

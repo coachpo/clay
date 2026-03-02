@@ -31,7 +31,7 @@ async def test_non_streaming_cancellation() -> None:
                     f"{BASE_URL}/v1/messages",
                     headers=DEFAULT_HEADERS,
                     json={
-                        "model": "claude-3-5-sonnet-20241022",
+                        "model": os.getenv("ANTHROPIC_MODEL", "gpt-4o-mini"),
                         "max_tokens": 1000,
                         "messages": [
                             {
@@ -72,7 +72,7 @@ async def test_streaming_cancellation() -> None:
                 f"{BASE_URL}/v1/messages",
                 headers=DEFAULT_HEADERS,
                 json={
-                    "model": "claude-3-5-sonnet-20241022",
+                    "model": os.getenv("ANTHROPIC_MODEL", "gpt-4o-mini"),
                     "max_tokens": 1000,
                     "messages": [
                         {
@@ -134,17 +134,11 @@ async def test_openai_path_auth() -> None:
         "authorization": f"Bearer {CLIENT_API_KEY}",
         "content-type": "application/json",
     }
-    payload = {
-        "model": "gpt-4o-mini",
-        "messages": [{"role": "user", "content": "Hello"}],
-        "max_tokens": 8,
-    }
 
     async with httpx.AsyncClient(timeout=30) as client:
-        response = await client.post(
-            f"{BASE_URL}/v1/chat/completions",
+        response = await client.get(
+            f"{BASE_URL}/v1/models",
             headers=headers,
-            json=payload,
         )
 
     if response.status_code in {200, 400, 429, 500, 502, 503, 504}:

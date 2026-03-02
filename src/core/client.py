@@ -1,5 +1,4 @@
 import asyncio
-import json
 from typing import Any, AsyncGenerator, Dict, Optional
 
 from fastapi import HTTPException
@@ -45,23 +44,23 @@ class OpenAIClient:
 
         self.active_requests: Dict[str, asyncio.Event] = {}
 
-    async def create_chat_completion(
+    async def create_response(
         self,
         request: Dict[str, Any],
         request_id: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Send chat completion to OpenAI API with cancellation support."""
+        """Send non-streaming Responses API request with cancellation support."""
         if request_id:
             cancel_event = asyncio.Event()
             self.active_requests[request_id] = cancel_event
 
         try:
-            completion_task = asyncio.create_task(self.client.chat.completions.create(**request))
+            response_task = asyncio.create_task(self.client.responses.create(**request))
 
             if request_id:
                 cancel_task = asyncio.create_task(cancel_event.wait())
                 done, pending = await asyncio.wait(
-                    [completion_task, cancel_task],
+                    [response_task, cancel_task],
                     return_when=asyncio.FIRST_COMPLETED,
                 )
 
@@ -73,17 +72,17 @@ class OpenAIClient:
                         pass
 
                 if cancel_task in done:
-                    completion_task.cancel()
+                    response_task.cancel()
                     raise HTTPException(
                         status_code=499,
                         detail="Request cancelled by client",
                     )
 
-                completion = await completion_task
+                response = await response_task
             else:
-                completion = await completion_task
+                response = await response_task
 
-            return dict(completion.model_dump())
+            return dict(response.model_dump())
 
         except HTTPException:
             raise
@@ -117,26 +116,22 @@ class OpenAIClient:
             if request_id and request_id in self.active_requests:
                 del self.active_requests[request_id]
 
-    async def create_chat_completion_stream(
+    async def create_response_stream(
         self,
         request: Dict[str, Any],
         request_id: Optional[str] = None,
-    ) -> AsyncGenerator[str, None]:
-        """Send streaming chat completion to OpenAI API with cancellation support."""
+    ) -> AsyncGenerator[Dict[str, Any], None]:
+        """Send streaming Responses API request with cancellation support."""
         if request_id:
             cancel_event = asyncio.Event()
             self.active_requests[request_id] = cancel_event
 
         try:
-            request["stream"] = True
-            stream_options = request.get("stream_options")
-            if not isinstance(stream_options, dict):
-                stream_options = {}
-                request["stream_options"] = stream_options
-            stream_options["include_usage"] = True
+            stream_request = dict(request)
+            stream_request["stream"] = True
 
-            streaming_completion = await self.client.chat.completions.create(**request)
-            async for chunk in streaming_completion:
+            response_stream = await self.client.responses.create(**stream_request)
+            async for event in response_stream:
                 if request_id and request_id in self.active_requests:
                     if self.active_requests[request_id].is_set():
                         raise HTTPException(
@@ -144,11 +139,7 @@ class OpenAIClient:
                             detail="Request cancelled by client",
                         )
 
-                chunk_dict = chunk.model_dump()
-                chunk_json = json.dumps(chunk_dict, ensure_ascii=False)
-                yield f"data: {chunk_json}"
-
-            yield "data: [DONE]"
+                yield dict(event.model_dump())
 
         except HTTPException:
             raise
@@ -202,7 +193,7 @@ class OpenAIClient:
             return "Rate limit exceeded. Please wait and try again, or upgrade your API plan."
 
         if "model" in error_str and ("not found" in error_str or "does not exist" in error_str):
-            return "Model not found. Please check your BIG_MODEL and SMALL_MODEL " "configuration."
+            return "Model not found. Please check your BIG_MODEL and SMALL_MODEL configuration."
 
         if "billing" in error_str or "payment" in error_str:
             return "Billing issue. Please check your OpenAI account billing status."
