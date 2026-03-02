@@ -641,6 +641,35 @@ async def test_request_converter_supports_image_url_sources() -> None:
     assert image_parts[0].get("image_url") == "https://example.com/image.png", first_user
 
 
+def test_request_converter_uses_output_text_for_assistant_history() -> None:
+    payload = {
+        "model": ANTHROPIC_MODEL,
+        "max_tokens": 64,
+        "messages": [
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "hi there"},
+            {"role": "user", "content": "how are you?"},
+        ],
+    }
+
+    request_model = _build_claude_request_model(payload)
+    converted = convert_claude_to_openai(request_model, model_manager)
+    input_items = converted.get("input")
+    assert isinstance(input_items, list) and len(input_items) == 3, converted
+
+    user_item = input_items[0]
+    assistant_item = input_items[1]
+    assert user_item.get("role") == "user", converted
+    assert assistant_item.get("role") == "assistant", converted
+
+    user_content = user_item.get("content")
+    assistant_content = assistant_item.get("content")
+    assert isinstance(user_content, list) and user_content, user_item
+    assert isinstance(assistant_content, list) and assistant_content, assistant_item
+    assert user_content[0].get("type") == "input_text", user_item
+    assert assistant_content[0].get("type") == "output_text", assistant_item
+
+
 async def test_request_converter_rejects_native_web_search_tool() -> None:
     payload = {
         "model": ANTHROPIC_MODEL,
@@ -1042,6 +1071,8 @@ async def main() -> None:
 
     await test_request_converter_supports_image_url_sources()
     print("- request converter image url support check passed")
+    test_request_converter_uses_output_text_for_assistant_history()
+    print("- request converter assistant history text-type check passed")
 
     await test_request_converter_rejects_native_web_search_tool()
     print("- request converter native web_search rejection check passed")

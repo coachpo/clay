@@ -159,7 +159,8 @@ def _convert_claude_user_message_to_responses_items(
     if isinstance(message.content, str):
         return [
             _responses_message_item(
-                Constants.ROLE_USER, [{"type": "input_text", "text": message.content}]
+                Constants.ROLE_USER,
+                [_responses_text_part(Constants.ROLE_USER, message.content)],
             )
         ]
 
@@ -195,7 +196,7 @@ def _convert_claude_assistant_message_to_responses_items(
         return [
             _responses_message_item(
                 Constants.ROLE_ASSISTANT,
-                [{"type": "input_text", "text": message.content}],
+                [_responses_text_part(Constants.ROLE_ASSISTANT, message.content)],
             )
         ]
 
@@ -208,7 +209,7 @@ def _convert_claude_assistant_message_to_responses_items(
         output_items.append(
             _responses_message_item(
                 Constants.ROLE_ASSISTANT,
-                [{"type": "input_text", "text": "".join(text_parts)}],
+                [_responses_text_part(Constants.ROLE_ASSISTANT, "".join(text_parts))],
             )
         )
         text_parts.clear()
@@ -247,12 +248,17 @@ def _convert_claude_assistant_message_to_responses_items(
 def _responses_message_item(role: str, content_parts: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
     normalized_parts = [part for part in content_parts if isinstance(part, dict)]
     if not normalized_parts:
-        normalized_parts = [{"type": "input_text", "text": ""}]
+        normalized_parts = [_responses_text_part(role, "")]
     return {
         "type": "message",
         "role": role,
         "content": normalized_parts,
     }
+
+
+def _responses_text_part(role: str, text: str) -> Dict[str, str]:
+    part_type = "output_text" if role == Constants.ROLE_ASSISTANT else "input_text"
+    return {"type": part_type, "text": text}
 
 
 def _convert_user_block_to_responses_parts(block: UserContentBlock) -> List[Dict[str, Any]]:
