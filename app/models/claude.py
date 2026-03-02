@@ -196,6 +196,10 @@ class ClaudeMetadata(StrictBaseModel):
     user_id: Optional[str] = None
 
 
+class ClaudeOutputConfig(StrictBaseModel):
+    effort: Optional[Literal["low", "medium", "high", "max"]] = None
+
+
 class ClaudeThinkingTurnsKeep(StrictBaseModel):
     type: Literal["thinking_turns"]
     value: int = Field(ge=1)
@@ -231,14 +235,11 @@ class ClaudeContextManagement(StrictBaseModel):
 class ClaudeThinkingConfig(StrictBaseModel):
     type: Literal["enabled", "disabled", "adaptive"]
     budget_tokens: Optional[int] = Field(default=None, ge=1)
-    effort: Optional[Literal["low", "medium", "high"]] = None
 
     @model_validator(mode="after")
     def validate_budget_tokens(self) -> "ClaudeThinkingConfig":
         if self.type != "enabled" and self.budget_tokens is not None:
             raise ValueError("budget_tokens is only valid when thinking.type is 'enabled'")
-        if self.type != "adaptive" and self.effort is not None:
-            raise ValueError("effort is only valid when thinking.type is 'adaptive'")
         return self
 
 
@@ -278,6 +279,7 @@ class _ClaudeMessagesRequestFields(BaseModel):
     temperature: Optional[float] = Field(default=1.0, ge=0.0, le=1.0)
     top_p: Optional[float] = Field(default=None, ge=0.0, le=1.0)
     top_k: Optional[int] = Field(default=None, ge=1)
+    output_config: Optional[ClaudeOutputConfig] = None
     metadata: Optional[ClaudeMetadata] = None
     tools: Optional[List[ClaudeTool]] = None
     tool_choice: Optional[ClaudeToolChoice] = None
@@ -307,6 +309,7 @@ class _ClaudeTokenCountRequestFields(BaseModel):
     model: str
     messages: List[ClaudeMessage]
     system: Optional[Union[str, List[ClaudeSystemContent]]] = None
+    output_config: Optional[ClaudeOutputConfig] = None
     tools: Optional[List[ClaudeTool]] = None
     thinking: Optional[ClaudeThinkingConfig] = None
     tool_choice: Optional[ClaudeToolChoice] = None

@@ -622,7 +622,8 @@ async def test_messages_accepts_adaptive_thinking_for_claude_sonnet_4_6() -> Non
                 "model": "claude-sonnet-4-6",
                 "max_tokens": 64,
                 "messages": [{"role": "user", "content": "Use adaptive thinking"}],
-                "thinking": {"type": "adaptive", "effort": "high"},
+                "thinking": {"type": "adaptive"},
+                "output_config": {"effort": "high"},
             },
             query_string="beta=true",
         )
@@ -658,20 +659,21 @@ async def test_messages_accepts_adaptive_thinking_for_claude_opus_4_6() -> None:
     assert stub_client.last_request is not None
     reasoning = stub_client.last_request.get("reasoning")
     assert isinstance(reasoning, dict), stub_client.last_request
-    assert reasoning.get("effort") == "medium", stub_client.last_request
+    assert reasoning.get("effort") == "high", stub_client.last_request
 
 
-async def test_messages_enabled_thinking_with_budget_tokens_still_works() -> None:
+async def test_messages_enabled_thinking_with_budget_tokens_still_works_for_sonnet_4_5() -> None:
     stub_client = _StubOpenAIClientForMessages()
     original_client = api_endpoints.openai_client
     api_endpoints.openai_client = stub_client
     try:
         response = await _post_messages_in_process(
             {
-                "model": "claude-3-5-sonnet",
+                "model": "claude-sonnet-4-5",
                 "max_tokens": 64,
                 "messages": [{"role": "user", "content": "Use classic thinking"}],
                 "thinking": {"type": "enabled", "budget_tokens": 8192},
+                "output_config": {"effort": "medium"},
             }
         )
     finally:
@@ -682,13 +684,13 @@ async def test_messages_enabled_thinking_with_budget_tokens_still_works() -> Non
     assert stub_client.last_request is not None
     reasoning = stub_client.last_request.get("reasoning")
     assert isinstance(reasoning, dict), stub_client.last_request
-    assert reasoning.get("effort") == "high", stub_client.last_request
+    assert reasoning.get("effort") == "medium", stub_client.last_request
 
 
 async def test_messages_rejects_adaptive_thinking_for_older_models() -> None:
     response = await _post_messages_in_process(
         {
-            "model": "claude-3-5-sonnet",
+            "model": "claude-sonnet-4-5",
             "max_tokens": 64,
             "messages": [{"role": "user", "content": "Use adaptive thinking"}],
             "thinking": {"type": "adaptive"},
@@ -1419,8 +1421,8 @@ async def main() -> None:
     await test_messages_accepts_adaptive_thinking_for_claude_opus_4_6()
     print("- messages adaptive thinking support (claude-opus-4-6) check passed")
 
-    await test_messages_enabled_thinking_with_budget_tokens_still_works()
-    print("- messages enabled thinking budget_tokens compatibility check passed")
+    await test_messages_enabled_thinking_with_budget_tokens_still_works_for_sonnet_4_5()
+    print("- messages Sonnet 4.5 compatibility (enabled + budget_tokens) check passed")
 
     await test_messages_rejects_adaptive_thinking_for_older_models()
     print("- messages adaptive thinking model compatibility rejection check passed")

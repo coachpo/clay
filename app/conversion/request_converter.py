@@ -19,6 +19,7 @@ from app.models.claude import (
     ClaudeMessage,
     ClaudeMessageContentBlock,
     ClaudeMessagesRequestModel,
+    ClaudeOutputConfig,
     ClaudeSystemContent,
     ClaudeThinkingConfig,
     ClaudeTool,
@@ -99,10 +100,12 @@ def convert_claude_to_responses_request(
         if parallel_tool_calls is not None:
             responses_request["parallel_tool_calls"] = parallel_tool_calls
 
-    if claude_request.thinking is not None:
-        responses_request["reasoning"] = {
-            "effort": _resolve_reasoning_effort(claude_request.thinking)
-        }
+    reasoning_effort = _resolve_reasoning_effort(
+        thinking=claude_request.thinking,
+        output_config=claude_request.output_config,
+    )
+    if reasoning_effort is not None:
+        responses_request["reasoning"] = {"effort": reasoning_effort}
     if claude_request.context_management is not None:
         responses_request["context_management"] = _convert_context_management_for_responses(
             claude_request.context_management
@@ -471,9 +474,21 @@ def _map_thinking_budget_to_reasoning_effort(budget_tokens: Optional[int]) -> st
     return "high"
 
 
-def _resolve_reasoning_effort(thinking: ClaudeThinkingConfig) -> str:
-    if thinking.type == "adaptive" and thinking.effort is not None:
-        return thinking.effort
+def _resolve_reasoning_effort(
+    thinking: Optional[ClaudeThinkingConfig],
+    output_config: Optional[ClaudeOutputConfig],
+) -> Optional[str]:
+    if output_config is not None and output_config.effort is not None:
+        return output_config.effort
+
+    if thinking is None:
+        return None
+
+    if thinking.type == "disabled":
+        return None
+    if thinking.type == "adaptive":
+        # Anthropic defaults adaptive mode to high effort when omitted.
+        return "high"
     return _map_thinking_budget_to_reasoning_effort(thinking.budget_tokens)
 
 
