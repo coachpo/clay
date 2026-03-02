@@ -91,6 +91,7 @@ class ClaudeContentBlockToolUse(StrictBaseModel):
     id: str
     name: str
     input: Dict[str, Any]
+    cache_control: Optional[ClaudeCacheControl] = None
 
 
 ToolResultContentBlock = Annotated[
@@ -104,6 +105,7 @@ class ClaudeContentBlockToolResult(StrictBaseModel):
     tool_use_id: str
     content: Union[str, List[ToolResultContentBlock]]
     is_error: Optional[bool] = None
+    cache_control: Optional[ClaudeCacheControl] = None
 
 
 class ClaudeContentBlockThinking(StrictBaseModel):

@@ -1093,6 +1093,55 @@ async def test_request_converter_supports_image_url_sources() -> None:
     assert image_parts[0].get("image_url") == "https://example.com/image.png", first_user
 
 
+def test_request_parser_accepts_cache_control_on_tool_blocks() -> None:
+    payload = {
+        "model": ANTHROPIC_MODEL,
+        "max_tokens": 64,
+        "system": [
+            {
+                "type": "text",
+                "text": "System guidance",
+                "cache_control": {"type": "ephemeral"},
+            }
+        ],
+        "messages": [
+            {"role": "user", "content": "Run ls"},
+            {
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "id": "call_123",
+                        "name": "bash",
+                        "input": {"command": "ls"},
+                        "cache_control": {"type": "ephemeral"},
+                    }
+                ],
+            },
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "call_123",
+                        "content": "AGENTS.md\nbackend\nfrontend\n",
+                        "cache_control": {"type": "ephemeral"},
+                    }
+                ],
+            },
+        ],
+    }
+
+    request_model = _build_claude_request_model(payload)
+    assistant_block = request_model.messages[1].content[0]
+    user_block = request_model.messages[2].content[0]
+
+    assert getattr(assistant_block, "type", None) == "tool_use", request_model
+    assert getattr(user_block, "type", None) == "tool_result", request_model
+    assert getattr(assistant_block, "cache_control", None) is not None, request_model
+    assert getattr(user_block, "cache_control", None) is not None, request_model
+
+
 def test_request_converter_uses_output_text_for_assistant_history() -> None:
     payload = {
         "model": ANTHROPIC_MODEL,
