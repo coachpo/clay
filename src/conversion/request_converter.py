@@ -14,6 +14,7 @@ from src.models.claude import (
     ClaudeContentBlockThinking,
     ClaudeContentBlockToolResult,
     ClaudeContentBlockToolUse,
+    ClaudeContextManagement,
     ClaudeFunctionTool,
     ClaudeMessage,
     ClaudeMessageContentBlock,
@@ -28,6 +29,7 @@ from src.models.claude import (
 )
 
 logger = logging.getLogger(__name__)
+DEFAULT_OPENAI_COMPACTION_THRESHOLD = 200000
 
 
 class ModelMapper(Protocol):
@@ -102,6 +104,10 @@ def convert_claude_to_responses_request(
                 claude_request.thinking.budget_tokens
             )
         }
+    if claude_request.context_management is not None:
+        responses_request["context_management"] = _convert_context_management_for_responses(
+            claude_request.context_management
+        )
 
     logger.debug(
         "Converted Claude request to OpenAI Responses format: %s",
@@ -461,3 +467,19 @@ def _map_thinking_budget_to_reasoning_effort(budget_tokens: Optional[int]) -> st
     if budget_tokens < 4096:
         return "medium"
     return "high"
+
+
+def _convert_context_management_for_responses(
+    context_management: ClaudeContextManagement,
+) -> List[Dict[str, Any]]:
+    # Anthropic context edits have no one-to-one Responses equivalent.
+    # OpenAI currently supports compaction entries, so map any request to compaction.
+    if not context_management.edits:
+        return []
+
+    return [
+        {
+            "type": "compaction",
+            "compact_threshold": DEFAULT_OPENAI_COMPACTION_THRESHOLD,
+        }
+    ]

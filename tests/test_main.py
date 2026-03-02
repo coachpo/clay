@@ -667,7 +667,7 @@ async def test_request_converter_rejects_native_web_search_tool() -> None:
         raise AssertionError("Expected web_search tool conversion to be rejected")
 
 
-async def test_request_converter_ignores_context_management() -> None:
+async def test_request_converter_maps_context_management() -> None:
     payload = {
         "model": ANTHROPIC_MODEL,
         "max_tokens": 64,
@@ -686,7 +686,9 @@ async def test_request_converter_ignores_context_management() -> None:
         payload, allow_unknown_fields=config.anthropic_allow_unknown_fields
     )
     converted = convert_claude_to_openai(request_model, model_manager)
-    assert "context_management" not in converted, converted
+    assert converted.get("context_management") == [
+        {"type": "compaction", "compact_threshold": 200000}
+    ], converted
 
 
 async def test_request_converter_rejects_top_k() -> None:
@@ -1012,8 +1014,8 @@ async def main() -> None:
     await test_request_converter_rejects_native_web_search_tool()
     print("- request converter native web_search rejection check passed")
 
-    await test_request_converter_ignores_context_management()
-    print("- request converter context_management passthrough-ignore check passed")
+    await test_request_converter_maps_context_management()
+    print("- request converter context_management mapping check passed")
 
     await test_request_converter_rejects_top_k()
     print("- request converter top_k rejection check passed")
