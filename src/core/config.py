@@ -29,8 +29,11 @@ class Config:
         self.host = os.environ.get("HOST", "0.0.0.0")
         self.port = int(os.environ.get("PORT", "8000"))
         self.log_level = os.environ.get("LOG_LEVEL", "INFO")
+        self.uvicorn_workers = int(os.environ.get("UVICORN_WORKERS", "1"))
         self.max_tokens_limit = int(os.environ.get("MAX_TOKENS_LIMIT", "4096"))
         self.min_tokens_limit = int(os.environ.get("MIN_TOKENS_LIMIT", "100"))
+        if self.uvicorn_workers < 1:
+            raise ValueError("UVICORN_WORKERS must be >= 1")
 
         self.request_timeout = int(os.environ.get("REQUEST_TIMEOUT", "90"))
         self.max_retries = int(os.environ.get("MAX_RETRIES", "2"))

@@ -122,7 +122,7 @@ async def test_server_running() -> bool:
             return False
     except Exception as error:
         print(f"Cannot connect to server: {error}")
-        print("Make sure to start the server with: uv run clay")
+        print("Make sure to start the server with: clay")
         return False
 
 

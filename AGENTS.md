@@ -32,8 +32,7 @@ clay/
 |-- .github/workflows/           # CI quality, Docker image build, cleanup automation
 |-- start_proxy.py               # compatibility wrapper entry script (mutates sys.path)
 |-- pyproject.toml               # packaging entrypoint + tool config
-|-- Dockerfile                   # lockfile-enforced container build
-`-- uv.lock                      # authoritative dependency lockfile
+`-- Dockerfile                   # production container build
 ```
 
 ## WHERE TO LOOK
@@ -61,8 +60,8 @@ clay/
 | `ModelManager.map_claude_model_to_openai` | method | `src/core/model_manager.py` | medium | Model routing policy |
 
 ## CONVENTIONS
-- Use `uv` and `uv.lock` as the dependency source of truth (`uv sync --locked` in CI and Docker).
-- Canonical runtime entrypoint is `uv run clay` (`pyproject` script -> `src.main:main`); `start_proxy.py` is compatibility-only.
+- Use `pyproject.toml` as the dependency source of truth (`python -m pip install .[dev]` for local quality checks).
+- Canonical runtime entrypoint is `clay` (`pyproject` script -> `src.main:main`); `start_proxy.py` is compatibility-only.
 - Anthropic header validation is configurable (`ANTHROPIC_SUPPORTED_VERSIONS`, fallback/missing flags), defaulting to `2023-06-01`.
 - Responses include both `request-id` and `x-request-id` headers on success and error paths.
 - Integration coverage is script-driven (`python tests/test_main.py`, `python test_cancellation.py`); pytest config exists in `pyproject.toml` but is not the primary flow.
@@ -72,7 +71,7 @@ clay/
 - Do not rely on stale docs command `python src/test_claude_to_openai.py` (file does not exist).
 - Do not use removed generation routes `POST /v1/chat/completions` or `POST /v1/responses`; they intentionally return 404.
 - Do not assume `docker-compose.yml` exists; this repo currently has no compose file.
-- Do not bypass lockfile sync in container/CI paths (`uv sync --locked` is required).
+- Do not diverge CI and Docker install/run workflows from the `pip` commands documented in this guide.
 - Do not remove request-id header parity (`request-id` and `x-request-id`) from API responses.
 - Do not treat provider-dependent integration skips/timeouts as deterministic product regressions.
 
@@ -84,13 +83,14 @@ clay/
 
 ## COMMANDS
 ```bash
-uv sync --locked --group dev
-uv run clay
+python -m pip install --upgrade pip
+python -m pip install '.[dev]'
+clay
 python start_proxy.py
-uv run isort --check-only src tests test_cancellation.py
-uv run black --check src tests test_cancellation.py
-uv run ruff check src tests test_cancellation.py
-uv run mypy src
+isort --check-only src tests test_cancellation.py
+black --check src tests test_cancellation.py
+ruff check src tests test_cancellation.py
+mypy src
 python tests/test_main.py
 python test_cancellation.py
 docker build -t clay .

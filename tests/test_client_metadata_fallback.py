@@ -99,7 +99,9 @@ async def test_retries_without_context_management_on_unsupported_parameter_error
 
 
 @pytest.mark.asyncio
-async def test_retries_once_without_all_optional_fields_when_any_optional_field_is_rejected() -> None:
+async def test_retries_once_without_all_optional_fields_when_any_optional_field_is_rejected() -> (
+    None
+):
     client = OpenAIClient(api_key="sk-test", base_url="https://example.com")
     calls: list[Dict[str, Any]] = []
     sentinel = object()

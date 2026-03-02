@@ -124,7 +124,7 @@ def main() -> None:
     if len(sys.argv) > 1 and sys.argv[1] == "--help":
         print("Clay API Proxy v1.0.0")
         print("")
-        print("Usage: uv run clay")
+        print("Usage: clay")
         print("")
         print("Required environment variables:")
         print("  OPENAI_API_KEY - Your OpenAI API key")
@@ -139,6 +139,7 @@ def main() -> None:
         print("  HOST - Server host (default: 0.0.0.0)")
         print("  PORT - Server port (default: 8000)")
         print("  LOG_LEVEL - Logging level (default: INFO)")
+        print("  UVICORN_WORKERS - Uvicorn worker process count (default: 1)")
         print("  MAX_TOKENS_LIMIT - Token limit (default: 4096)")
         print("  MIN_TOKENS_LIMIT - Minimum token limit (default: 100)")
         print("  REQUEST_TIMEOUT - Request timeout in seconds (default: 90)")
@@ -156,6 +157,7 @@ def main() -> None:
     print(f"   Small Model (haiku): {config.small_model}")
     print(f"   Max Tokens Limit: {config.max_tokens_limit}")
     print(f"   Request Timeout: {config.request_timeout}s")
+    print(f"   Uvicorn Workers: {config.uvicorn_workers}")
     print(f"   Server: {config.host}:{config.port}")
     print(
         "   Client API Key Validation: " f"{'Enabled' if config.anthropic_api_key else 'Disabled'}"
@@ -172,6 +174,7 @@ def main() -> None:
         host=config.host,
         port=config.port,
         log_level=log_level,
+        workers=config.uvicorn_workers,
         reload=False,
     )
 

@@ -33,17 +33,19 @@
 
 ## LOCAL COMMANDS
 ```bash
-uv run mypy src/
-uv run black src/
-uv run isort src/
-uv run ruff check src/
+python -m pip install --upgrade pip
+python -m pip install '.[dev]'
+mypy src/
+black src/
+isort src/
+ruff check src/
 python start_proxy.py
 ```
 
 ## GOTCHAS
 - `core/config.py` and `core/logging.py` execute import-time side effects; avoid moving imports casually.
 - `main.py` and `core/logging.py` each normalize log level; keep behavior aligned if touched.
-- `start_proxy.py` mutates `sys.path`; prefer `uv run clay` for stable packaging path.
+- `start_proxy.py` mutates `sys.path`; prefer `clay` for stable packaging path.
 - `api/endpoints.py` is intentionally large and contract-heavy; keep bugfixes scoped and regression-tested.
 
 ## ESCALATION

@@ -31,6 +31,6 @@
 
 ## VERIFICATION
 ```bash
-uv run mypy src/
+mypy src/
 python tests/test_main.py
 ```
