@@ -425,17 +425,14 @@ def _convert_system_content(
 
 def _convert_function_tool_definition(tool: ClaudeTool) -> Dict[str, Any]:
     if isinstance(tool, ClaudeFunctionTool):
-        function_payload: Dict[str, Any] = {
+        responses_tool: Dict[str, Any] = {
+            "type": Constants.TOOL_FUNCTION,
             "name": tool.name,
             "parameters": tool.input_schema,
         }
         if tool.description:
-            function_payload["description"] = tool.description
-
-        return {
-            "type": Constants.TOOL_FUNCTION,
-            Constants.TOOL_FUNCTION: function_payload,
-        }
+            responses_tool["description"] = tool.description
+        return responses_tool
 
     if isinstance(tool, ClaudeWebSearchTool):
         raise ValueError(

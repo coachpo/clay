@@ -1,4 +1,5 @@
 import asyncio
+import logging
 from typing import Any, AsyncGenerator, Dict, Optional
 
 from fastapi import HTTPException
@@ -9,6 +10,8 @@ from openai._exceptions import (
     BadRequestError,
     RateLimitError,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class OpenAIClient:
@@ -44,6 +47,45 @@ class OpenAIClient:
 
         self.active_requests: Dict[str, asyncio.Event] = {}
 
+    @staticmethod
+    def _is_unsupported_parameter_error(error: BadRequestError, parameter: str) -> bool:
+        detail = str(error).lower()
+        normalized_parameter = parameter.lower()
+        if normalized_parameter not in detail:
+            return False
+        return "unsupported parameter" in detail or "unknown parameter" in detail
+
+    async def _create_with_metadata_fallback(self, request: Dict[str, Any]) -> Any:
+        # Some OpenAI-compatible providers reject selected optional request fields.
+        # Retry without the rejected parameter when the provider explicitly reports it.
+        retry_request = dict(request)
+        fallback_fields = ("metadata", "context_management")
+
+        for _ in range(len(fallback_fields) + 1):
+            try:
+                return await self.client.responses.create(**retry_request)
+            except BadRequestError as error:
+                removed_field: Optional[str] = None
+                for field in fallback_fields:
+                    if field not in retry_request:
+                        continue
+                    if not self._is_unsupported_parameter_error(error, field):
+                        continue
+                    next_request = dict(retry_request)
+                    next_request.pop(field, None)
+                    retry_request = next_request
+                    removed_field = field
+                    logger.warning(
+                        "Upstream rejected optional field '%s'; retrying /v1/responses without it.",
+                        field,
+                    )
+                    break
+                if removed_field is not None:
+                    continue
+                raise
+
+        raise RuntimeError("unexpected fallback loop exit")
+
     async def create_response(
         self,
         request: Dict[str, Any],
@@ -55,7 +97,7 @@ class OpenAIClient:
             self.active_requests[request_id] = cancel_event
 
         try:
-            response_task = asyncio.create_task(self.client.responses.create(**request))
+            response_task = asyncio.create_task(self._create_with_metadata_fallback(request))
 
             if request_id:
                 cancel_task = asyncio.create_task(cancel_event.wait())
@@ -130,7 +172,7 @@ class OpenAIClient:
             stream_request = dict(request)
             stream_request["stream"] = True
 
-            response_stream = await self.client.responses.create(**stream_request)
+            response_stream = await self._create_with_metadata_fallback(stream_request)
             async for event in response_stream:
                 if request_id and request_id in self.active_requests:
                     if self.active_requests[request_id].is_set():

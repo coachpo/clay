@@ -667,6 +667,38 @@ async def test_request_converter_rejects_native_web_search_tool() -> None:
         raise AssertionError("Expected web_search tool conversion to be rejected")
 
 
+async def test_request_converter_maps_function_tools_to_responses_shape() -> None:
+    payload = {
+        "model": ANTHROPIC_MODEL,
+        "max_tokens": 64,
+        "messages": [{"role": "user", "content": "Use weather tool"}],
+        "tools": [
+            {
+                "name": "weather",
+                "description": "Get weather by city",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {"city": {"type": "string"}},
+                    "required": ["city"],
+                },
+            }
+        ],
+    }
+
+    request_model = parse_claude_messages_request(
+        payload, allow_unknown_fields=config.anthropic_allow_unknown_fields
+    )
+    converted = convert_claude_to_openai(request_model, model_manager)
+    tools = converted.get("tools")
+    assert isinstance(tools, list) and tools, converted
+    first_tool = tools[0]
+    assert first_tool.get("type") == "function", first_tool
+    assert first_tool.get("name") == "weather", first_tool
+    assert first_tool.get("description") == "Get weather by city", first_tool
+    assert first_tool.get("parameters", {}).get("type") == "object", first_tool
+    assert "function" not in first_tool, first_tool
+
+
 async def test_request_converter_maps_context_management() -> None:
     payload = {
         "model": ANTHROPIC_MODEL,
@@ -1013,6 +1045,9 @@ async def main() -> None:
 
     await test_request_converter_rejects_native_web_search_tool()
     print("- request converter native web_search rejection check passed")
+
+    await test_request_converter_maps_function_tools_to_responses_shape()
+    print("- request converter function-tools shape check passed")
 
     await test_request_converter_maps_context_management()
     print("- request converter context_management mapping check passed")
