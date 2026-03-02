@@ -99,19 +99,16 @@ async def test_retries_without_context_management_on_unsupported_parameter_error
 
 
 @pytest.mark.asyncio
-async def test_retries_without_multiple_unsupported_optional_parameters() -> None:
+async def test_retries_once_without_all_optional_fields_when_any_optional_field_is_rejected() -> None:
     client = OpenAIClient(api_key="sk-test", base_url="https://example.com")
     calls: list[Dict[str, Any]] = []
     sentinel = object()
-    errors = [
-        _bad_request_error("Unsupported parameter: metadata"),
-        _bad_request_error('{"detail":"Unsupported parameter: context_management"}'),
-    ]
+    unsupported_metadata_error = _bad_request_error("Unsupported parameter: metadata")
 
     async def fake_create(**kwargs: Any) -> Any:
         calls.append(dict(kwargs))
-        if len(calls) <= len(errors):
-            raise errors[len(calls) - 1]
+        if len(calls) == 1:
+            raise unsupported_metadata_error
         return sentinel
 
     client.client = SimpleNamespace(responses=SimpleNamespace(create=fake_create))
@@ -132,11 +129,11 @@ async def test_retries_without_multiple_unsupported_optional_parameters() -> Non
     result = await client._create_with_metadata_fallback(request)
 
     assert result is sentinel
-    assert len(calls) == 3
+    assert len(calls) == 2
     assert "metadata" in calls[0]
+    assert "context_management" in calls[0]
     assert "metadata" not in calls[1]
-    assert "context_management" in calls[1]
-    assert "context_management" not in calls[2]
+    assert "context_management" not in calls[1]
 
 
 @pytest.mark.asyncio

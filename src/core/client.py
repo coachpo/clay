@@ -55,36 +55,72 @@ class OpenAIClient:
             return False
         return "unsupported parameter" in detail or "unknown parameter" in detail
 
+    @staticmethod
+    def _is_unexpected_keyword_argument_error(error: TypeError, parameter: str) -> bool:
+        detail = str(error).lower()
+        normalized_parameter = parameter.lower()
+        if normalized_parameter not in detail:
+            return False
+        return "unexpected keyword argument" in detail
+
+    def _remove_optional_fallback_fields(
+        self,
+        request: Dict[str, Any],
+        fallback_fields: tuple[str, ...],
+        error: Exception,
+    ) -> tuple[Dict[str, Any], tuple[str, ...], Optional[str]]:
+        trigger_field: Optional[str] = None
+        for field in fallback_fields:
+            if field not in request:
+                continue
+
+            if isinstance(error, BadRequestError):
+                is_unsupported = self._is_unsupported_parameter_error(error, field)
+            elif isinstance(error, TypeError):
+                is_unsupported = self._is_unexpected_keyword_argument_error(error, field)
+            else:
+                is_unsupported = False
+
+            if is_unsupported:
+                trigger_field = field
+                break
+
+        if trigger_field is None:
+            return request, (), None
+
+        next_request = dict(request)
+        removed_fields: list[str] = []
+        for field in fallback_fields:
+            if field in next_request:
+                next_request.pop(field, None)
+                removed_fields.append(field)
+
+        return next_request, tuple(removed_fields), trigger_field
+
     async def _create_with_metadata_fallback(self, request: Dict[str, Any]) -> Any:
         # Some OpenAI-compatible providers reject selected optional request fields.
-        # Retry without the rejected parameter when the provider explicitly reports it.
+        # Retry once without all known compatibility fields when any one is rejected.
         retry_request = dict(request)
         fallback_fields = ("metadata", "context_management")
 
-        for _ in range(len(fallback_fields) + 1):
-            try:
-                return await self.client.responses.create(**retry_request)
-            except BadRequestError as error:
-                removed_field: Optional[str] = None
-                for field in fallback_fields:
-                    if field not in retry_request:
-                        continue
-                    if not self._is_unsupported_parameter_error(error, field):
-                        continue
-                    next_request = dict(retry_request)
-                    next_request.pop(field, None)
-                    retry_request = next_request
-                    removed_field = field
-                    logger.warning(
-                        "Upstream rejected optional field '%s'; retrying /v1/responses without it.",
-                        field,
-                    )
-                    break
-                if removed_field is not None:
-                    continue
+        try:
+            return await self.client.responses.create(**retry_request)
+        except (BadRequestError, TypeError) as error:
+            retry_request, removed_fields, trigger_field = self._remove_optional_fallback_fields(
+                retry_request,
+                fallback_fields,
+                error,
+            )
+            if trigger_field is None:
                 raise
 
-        raise RuntimeError("unexpected fallback loop exit")
+            logger.warning(
+                "Upstream rejected optional field '%s' (%s); retrying /v1/responses without optional fields: %s.",
+                trigger_field,
+                type(error).__name__,
+                ", ".join(removed_fields),
+            )
+            return await self.client.responses.create(**retry_request)
 
     async def create_response(
         self,
