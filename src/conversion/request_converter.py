@@ -123,10 +123,6 @@ def _validate_supported_claude_fields_for_responses(
         raise ValueError(
             "Field 'inference_geo' is not supported for /v1/messages in Responses-only mode."
         )
-    if claude_request.context_management is not None:
-        raise ValueError(
-            "Field 'context_management' is not supported for /v1/messages in Responses-only mode."
-        )
 
     for index, tool in enumerate(claude_request.tools or []):
         if isinstance(tool, ClaudeWebSearchTool):
