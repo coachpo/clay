@@ -635,7 +635,32 @@ async def test_messages_accepts_adaptive_thinking_for_claude_sonnet_4_6() -> Non
     assert stub_client.last_request is not None
     reasoning = stub_client.last_request.get("reasoning")
     assert isinstance(reasoning, dict), stub_client.last_request
-    assert reasoning.get("effort") == "high", stub_client.last_request
+    assert reasoning.get("effort") == "xhigh", stub_client.last_request
+
+
+async def test_messages_maps_low_effort_to_openai_medium() -> None:
+    stub_client = _StubOpenAIClientForMessages()
+    original_client = api_endpoints.openai_client
+    api_endpoints.openai_client = stub_client
+    try:
+        response = await _post_messages_in_process(
+            {
+                "model": "claude-sonnet-4-6",
+                "max_tokens": 64,
+                "messages": [{"role": "user", "content": "Use low effort"}],
+                "thinking": {"type": "adaptive"},
+                "output_config": {"effort": "low"},
+            }
+        )
+    finally:
+        api_endpoints.openai_client = original_client
+
+    assert 200 <= response.status_code < 300, response.text
+    _assert_request_id_headers(response)
+    assert stub_client.last_request is not None
+    reasoning = stub_client.last_request.get("reasoning")
+    assert isinstance(reasoning, dict), stub_client.last_request
+    assert reasoning.get("effort") == "medium", stub_client.last_request
 
 
 async def test_messages_accepts_adaptive_thinking_for_claude_opus_4_6() -> None:
@@ -657,9 +682,32 @@ async def test_messages_accepts_adaptive_thinking_for_claude_opus_4_6() -> None:
     assert 200 <= response.status_code < 300, response.text
     _assert_request_id_headers(response)
     assert stub_client.last_request is not None
+    assert "reasoning" not in stub_client.last_request, stub_client.last_request
+
+
+async def test_messages_maps_max_effort_to_openai_xhigh() -> None:
+    stub_client = _StubOpenAIClientForMessages()
+    original_client = api_endpoints.openai_client
+    api_endpoints.openai_client = stub_client
+    try:
+        response = await _post_messages_in_process(
+            {
+                "model": "claude-opus-4-6",
+                "max_tokens": 64,
+                "messages": [{"role": "user", "content": "Use max effort"}],
+                "thinking": {"type": "adaptive"},
+                "output_config": {"effort": "max"},
+            }
+        )
+    finally:
+        api_endpoints.openai_client = original_client
+
+    assert 200 <= response.status_code < 300, response.text
+    _assert_request_id_headers(response)
+    assert stub_client.last_request is not None
     reasoning = stub_client.last_request.get("reasoning")
     assert isinstance(reasoning, dict), stub_client.last_request
-    assert reasoning.get("effort") == "high", stub_client.last_request
+    assert reasoning.get("effort") == "xhigh", stub_client.last_request
 
 
 async def test_messages_enabled_thinking_with_budget_tokens_still_works_for_sonnet_4_5() -> None:
@@ -684,7 +732,80 @@ async def test_messages_enabled_thinking_with_budget_tokens_still_works_for_sonn
     assert stub_client.last_request is not None
     reasoning = stub_client.last_request.get("reasoning")
     assert isinstance(reasoning, dict), stub_client.last_request
-    assert reasoning.get("effort") == "medium", stub_client.last_request
+    assert reasoning.get("effort") == "high", stub_client.last_request
+
+
+async def test_messages_enabled_thinking_budget_tokens_maps_to_xhigh_without_output_config() -> (
+    None
+):
+    stub_client = _StubOpenAIClientForMessages()
+    original_client = api_endpoints.openai_client
+    api_endpoints.openai_client = stub_client
+    try:
+        response = await _post_messages_in_process(
+            {
+                "model": "claude-sonnet-4-5",
+                "max_tokens": 64,
+                "messages": [{"role": "user", "content": "Use classic thinking"}],
+                "thinking": {"type": "enabled", "budget_tokens": 8192},
+            }
+        )
+    finally:
+        api_endpoints.openai_client = original_client
+
+    assert 200 <= response.status_code < 300, response.text
+    _assert_request_id_headers(response)
+    assert stub_client.last_request is not None
+    reasoning = stub_client.last_request.get("reasoning")
+    assert isinstance(reasoning, dict), stub_client.last_request
+    assert reasoning.get("effort") == "xhigh", stub_client.last_request
+
+
+async def test_messages_output_config_without_effort_falls_back_to_thinking_budget() -> None:
+    stub_client = _StubOpenAIClientForMessages()
+    original_client = api_endpoints.openai_client
+    api_endpoints.openai_client = stub_client
+    try:
+        response = await _post_messages_in_process(
+            {
+                "model": "claude-sonnet-4-5",
+                "max_tokens": 64,
+                "messages": [{"role": "user", "content": "Use classic thinking"}],
+                "thinking": {"type": "enabled", "budget_tokens": 8192},
+                "output_config": {},
+            }
+        )
+    finally:
+        api_endpoints.openai_client = original_client
+
+    assert 200 <= response.status_code < 300, response.text
+    _assert_request_id_headers(response)
+    assert stub_client.last_request is not None
+    reasoning = stub_client.last_request.get("reasoning")
+    assert isinstance(reasoning, dict), stub_client.last_request
+    assert reasoning.get("effort") == "xhigh", stub_client.last_request
+
+
+async def test_messages_enabled_thinking_without_budget_turns_reasoning_off() -> None:
+    stub_client = _StubOpenAIClientForMessages()
+    original_client = api_endpoints.openai_client
+    api_endpoints.openai_client = stub_client
+    try:
+        response = await _post_messages_in_process(
+            {
+                "model": "claude-sonnet-4-5",
+                "max_tokens": 64,
+                "messages": [{"role": "user", "content": "Use classic thinking"}],
+                "thinking": {"type": "enabled"},
+            }
+        )
+    finally:
+        api_endpoints.openai_client = original_client
+
+    assert 200 <= response.status_code < 300, response.text
+    _assert_request_id_headers(response)
+    assert stub_client.last_request is not None
+    assert "reasoning" not in stub_client.last_request, stub_client.last_request
 
 
 async def test_messages_rejects_adaptive_thinking_for_older_models() -> None:
@@ -1418,11 +1539,26 @@ async def main() -> None:
     await test_messages_accepts_adaptive_thinking_for_claude_sonnet_4_6()
     print("- messages adaptive thinking support (claude-sonnet-4-6) check passed")
 
+    await test_messages_maps_low_effort_to_openai_medium()
+    print("- messages adaptive low effort maps to medium check passed")
+
     await test_messages_accepts_adaptive_thinking_for_claude_opus_4_6()
     print("- messages adaptive thinking support (claude-opus-4-6) check passed")
 
+    await test_messages_maps_max_effort_to_openai_xhigh()
+    print("- messages adaptive max effort maps to xhigh check passed")
+
     await test_messages_enabled_thinking_with_budget_tokens_still_works_for_sonnet_4_5()
     print("- messages Sonnet 4.5 compatibility (enabled + budget_tokens) check passed")
+
+    await test_messages_enabled_thinking_budget_tokens_maps_to_xhigh_without_output_config()
+    print("- messages budget_tokens mapping to xhigh check passed")
+
+    await test_messages_output_config_without_effort_falls_back_to_thinking_budget()
+    print("- messages empty output_config falls back to budget mapping check passed")
+
+    await test_messages_enabled_thinking_without_budget_turns_reasoning_off()
+    print("- messages enabled thinking without budget keeps reasoning off check passed")
 
     await test_messages_rejects_adaptive_thinking_for_older_models()
     print("- messages adaptive thinking model compatibility rejection check passed")

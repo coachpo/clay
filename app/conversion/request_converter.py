@@ -464,22 +464,24 @@ def _as_user_content_block(block: ClaudeMessageContentBlock) -> UserContentBlock
     raise ValueError(f"Unsupported user content block type for conversion: {block.type}")
 
 
-def _map_thinking_budget_to_reasoning_effort(budget_tokens: Optional[int]) -> str:
+def _map_thinking_budget_to_reasoning_effort(budget_tokens: Optional[int]) -> Optional[str]:
     if budget_tokens is None:
-        return "medium"
+        return None
     if budget_tokens < 1024:
-        return "low"
-    if budget_tokens < 4096:
         return "medium"
-    return "high"
+    if budget_tokens < 4096:
+        return "high"
+    return "xhigh"
 
 
 def _resolve_reasoning_effort(
     thinking: Optional[ClaudeThinkingConfig],
     output_config: Optional[ClaudeOutputConfig],
 ) -> Optional[str]:
-    if output_config is not None and output_config.effort is not None:
-        return output_config.effort
+    if output_config is not None:
+        output_effort = _map_output_effort_to_openai_reasoning_effort(output_config.effort)
+        if output_effort is not None:
+            return output_effort
 
     if thinking is None:
         return None
@@ -487,9 +489,21 @@ def _resolve_reasoning_effort(
     if thinking.type == "disabled":
         return None
     if thinking.type == "adaptive":
-        # Anthropic defaults adaptive mode to high effort when omitted.
-        return "high"
+        return None
     return _map_thinking_budget_to_reasoning_effort(thinking.budget_tokens)
+
+
+def _map_output_effort_to_openai_reasoning_effort(effort: Optional[str]) -> Optional[str]:
+    if effort is None:
+        return None
+
+    if effort == "low":
+        return "medium"
+    if effort == "medium":
+        return "high"
+    if effort in {"high", "max"}:
+        return "xhigh"
+    return None
 
 
 def _convert_context_management_for_responses(
