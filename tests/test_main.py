@@ -33,7 +33,7 @@ from src.core.model_manager import model_manager
 from src.models.claude import parse_claude_messages_request
 from src.models.openai import OpenAIResponsesRequest
 
-BASE_URL = os.getenv("BASE_URL", "http://localhost:8082")
+BASE_URL = os.getenv("BASE_URL", "http://localhost:8000")
 CLIENT_API_KEY = os.getenv("ANTHROPIC_API_KEY", "test-key")
 
 ANTHROPIC_HEADERS = {

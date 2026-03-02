@@ -11,7 +11,7 @@
 - Both scripts are executable entrypoints via `asyncio.run(main())`.
 
 ## LOCAL CONTRACTS
-- Tests expect proxy at `http://localhost:8082` unless `BASE_URL` overrides it.
+- Tests expect proxy at `http://localhost:8000` unless `BASE_URL` overrides it.
 - Scripts load environment from `.env` via `load_dotenv()`.
 - Many checks are provider-dependent and skip when upstream is unavailable/timeouts occur.
 - Assertions validate request ID header parity (`request-id` matches `x-request-id`).

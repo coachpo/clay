@@ -1,6 +1,6 @@
 import os
 import sys
-from typing import Dict, List, Optional
+from typing import List, Optional
 
 
 def _env_flag(name: str, default: bool = False) -> bool:
@@ -27,7 +27,7 @@ class Config:
         self.openai_base_url = os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1")
         self.azure_api_version = os.environ.get("AZURE_API_VERSION")
         self.host = os.environ.get("HOST", "0.0.0.0")
-        self.port = int(os.environ.get("PORT", "8082"))
+        self.port = int(os.environ.get("PORT", "8000"))
         self.log_level = os.environ.get("LOG_LEVEL", "INFO")
         self.max_tokens_limit = int(os.environ.get("MAX_TOKENS_LIMIT", "4096"))
         self.min_tokens_limit = int(os.environ.get("MIN_TOKENS_LIMIT", "100"))
@@ -76,22 +76,6 @@ class Config:
         if not self.anthropic_api_key:
             return True
         return client_api_key == self.anthropic_api_key
-
-    def get_custom_headers(self) -> Dict[str, str]:
-        """Get custom headers from environment variables."""
-        custom_headers: Dict[str, str] = {}
-
-        for env_key, env_value in os.environ.items():
-            if not env_key.startswith("CUSTOM_HEADER_"):
-                continue
-
-            header_name = env_key[14:]
-            if not header_name:
-                continue
-
-            custom_headers[header_name.replace("_", "-")] = env_value
-
-        return custom_headers
 
 
 try:

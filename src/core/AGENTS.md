@@ -13,7 +13,6 @@
 ## LOCAL CONTRACTS
 - `config = Config()` executes at import time and exits process on invalid required env.
 - `MIDDLE_MODEL` defaults to `BIG_MODEL` when unset.
-- `get_custom_headers()` maps `CUSTOM_HEADER_*` env vars to hyphenated HTTP headers.
 - `OpenAIClient.active_requests` tracks cancellable requests by `request_id`.
 - Streaming calls force `stream_options.include_usage = True` before provider invocation.
 - `cancel_request(request_id)` signals cancellation via `asyncio.Event` and is relied on by API/conversion layers.

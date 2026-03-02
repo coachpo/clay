@@ -22,12 +22,9 @@ class OpenAIClient:
         timeout: int = 90,
         max_retries: int = 2,
         api_version: Optional[str] = None,
-        custom_headers: Optional[Dict[str, str]] = None,
     ) -> None:
         self.api_key = api_key
         self.base_url = base_url
-        self.custom_headers = custom_headers or {}
-        all_headers = dict(self.custom_headers)
 
         self.client: Any
         if api_version:
@@ -37,7 +34,6 @@ class OpenAIClient:
                 api_version=api_version,
                 timeout=timeout,
                 max_retries=max_retries,
-                default_headers=all_headers,
             )
         else:
             self.client = AsyncOpenAI(
@@ -45,7 +41,6 @@ class OpenAIClient:
                 base_url=base_url,
                 timeout=timeout,
                 max_retries=max_retries,
-                default_headers=all_headers,
             )
 
         self.active_requests: Dict[str, asyncio.Event] = {}

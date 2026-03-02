@@ -31,14 +31,12 @@ from src.models.openai import OpenAIChatCompletionsRequest, OpenAIResponsesReque
 router = APIRouter()
 
 openai_api_key = config.openai_api_key or ""
-custom_headers = config.get_custom_headers()
 openai_client = OpenAIClient(
     openai_api_key,
     config.openai_base_url,
     config.request_timeout,
     config.max_retries,
     api_version=config.azure_api_version,
-    custom_headers=custom_headers,
 )
 
 
@@ -234,24 +232,8 @@ def _resolve_fallback_version(
 
 def _build_openai_request_from_claude(
     claude_request: ClaudeMessagesRequestModel,
-    http_request: Request,
 ) -> Dict[str, Any]:
     openai_request = convert_claude_to_openai(claude_request, model_manager)
-
-    extra_headers = openai_request.get("extra_headers")
-    if not isinstance(extra_headers, dict):
-        extra_headers = {}
-
-    anthropic_beta = getattr(http_request.state, "anthropic_beta", None)
-    if isinstance(anthropic_beta, str) and anthropic_beta:
-        extra_headers["anthropic-beta"] = anthropic_beta
-
-    resolved_anthropic_version = getattr(http_request.state, "resolved_anthropic_version", None)
-    if isinstance(resolved_anthropic_version, str) and resolved_anthropic_version:
-        extra_headers["anthropic-version"] = resolved_anthropic_version
-
-    if extra_headers:
-        openai_request["extra_headers"] = extra_headers
 
     _apply_anthropic_compat_enhancements(openai_request, claude_request)
     return openai_request
@@ -363,24 +345,18 @@ async def validate_api_contract(
     x_api_key: Optional[str] = Header(None),
     authorization: Optional[str] = Header(None),
     anthropic_version: Optional[str] = Header(None),
-    anthropic_beta: Optional[str] = Header(None),
     content_type: Optional[str] = Header(None, alias="content-type"),
 ) -> None:
     _enforce_request_size_limit(request)
 
-    resolved_anthropic_version = _resolve_requested_anthropic_version(
+    _resolve_requested_anthropic_version(
         anthropic_version=anthropic_version,
     )
-    request.state.resolved_anthropic_version = resolved_anthropic_version
-
     if content_type and not content_type.lower().startswith("application/json"):
         raise _http_exception_from_message(
             status_code=400,
             message="Unsupported Content-Type. Expected application/json.",
         )
-
-    if anthropic_beta:
-        request.state.anthropic_beta = anthropic_beta
 
     client_api_key = _extract_client_api_key(x_api_key, authorization)
 
@@ -437,7 +413,7 @@ async def create_message(
             request.stream,
         )
 
-        openai_request = _build_openai_request_from_claude(request, http_request)
+        openai_request = _build_openai_request_from_claude(request)
 
         if await http_request.is_disconnected():
             raise HTTPException(status_code=499, detail="Client disconnected")
@@ -604,7 +580,6 @@ async def create_chat_completion_openai(
 ) -> Any:
     request_id = str(uuid.uuid4())
     payload = request.model_dump(exclude_none=True)
-
     try:
         if request.stream:
             openai_stream = openai_client.create_chat_completion_stream(payload, request_id)

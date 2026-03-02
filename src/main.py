@@ -141,7 +141,7 @@ def main() -> None:
         print("  MIDDLE_MODEL - Model for sonnet requests (default: gpt-4o)")
         print("  SMALL_MODEL - Model for haiku requests (default: gpt-4o-mini)")
         print("  HOST - Server host (default: 0.0.0.0)")
-        print("  PORT - Server port (default: 8082)")
+        print("  PORT - Server port (default: 8000)")
         print("  LOG_LEVEL - Logging level (default: INFO)")
         print("  MAX_TOKENS_LIMIT - Token limit (default: 4096)")
         print("  MIN_TOKENS_LIMIT - Minimum token limit (default: 100)")
