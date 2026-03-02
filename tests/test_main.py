@@ -339,6 +339,80 @@ async def test_token_count_includes_tools_and_thinking() -> None:
         assert value_with_tools >= baseline_tokens, (value_with_tools, baseline_tokens)
 
 
+async def test_token_count_accepts_native_web_search_tool() -> None:
+    async with httpx.AsyncClient() as client:
+        payload = {
+            "model": "claude-3-5-sonnet-20241022",
+            "messages": [{"role": "user", "content": "Count web search"}],
+            "tools": [
+                {
+                    "type": "web_search_20250305",
+                    "name": "web_search",
+                    "max_uses": 3,
+                }
+            ],
+            "tool_choice": {"type": "auto"},
+        }
+        response = await _post_count_tokens(client, payload)
+        assert response.status_code == 200, response.text
+        value = response.json().get("input_tokens")
+        assert isinstance(value, int) and value > 0, response.text
+
+
+async def test_token_count_rejects_web_search_conflicting_domain_filters() -> None:
+    async with httpx.AsyncClient() as client:
+        payload = {
+            "model": "claude-3-5-sonnet-20241022",
+            "messages": [{"role": "user", "content": "Count web search"}],
+            "tools": [
+                {
+                    "type": "web_search_20250305",
+                    "name": "web_search",
+                    "allowed_domains": ["example.com"],
+                    "blocked_domains": ["untrusted.example"],
+                }
+            ],
+        }
+        response = await _post_count_tokens(client, payload)
+        _assert_anthropic_error_shape(response, expected_status=400)
+
+
+async def test_messages_native_web_search_skips_schema_validation_errors() -> None:
+    if not await _require_provider_or_skip("native web_search request parse check"):
+        return
+    async with httpx.AsyncClient(timeout=60) as client:
+        try:
+            response = await _post_messages(
+                client,
+                {
+                    "model": "claude-3-5-sonnet-20241022",
+                    "max_tokens": 64,
+                    "messages": [{"role": "user", "content": "Use web search if needed."}],
+                    "tools": [
+                        {
+                            "type": "web_search_20250305",
+                            "name": "web_search",
+                            "max_uses": 3,
+                        }
+                    ],
+                    "tool_choice": {"type": "auto"},
+                },
+            )
+        except httpx.TimeoutException:
+            print("- native web_search request parse check skipped (upstream provider timeout)")
+            return
+        if _is_upstream_unavailable(response):
+            print("- native web_search request parse check skipped (upstream provider unavailable)")
+            return
+        _assert_request_id_headers(response)
+        if response.status_code == 400:
+            payload = _assert_anthropic_error_shape(response, expected_status=400)
+            message = payload.get("error", {}).get("message", "")
+            assert "input_schema" not in message, payload
+            assert "extra_forbidden" not in message, payload
+            assert "('tools'," not in message, payload
+
+
 async def test_streaming_event_order_and_shapes() -> None:
     if not await _require_provider_or_skip("streaming event order check"):
         return
@@ -871,6 +945,117 @@ async def test_request_converter_supports_image_url_sources() -> None:
     assert image_url.get("url") == "https://example.com/image.png", first_user
 
 
+async def test_request_converter_supports_native_web_search_tool() -> None:
+    payload = {
+        "model": "claude-3-5-sonnet-20241022",
+        "max_tokens": 64,
+        "messages": [{"role": "user", "content": "Get current weather"}],
+        "tools": [
+            {
+                "type": "web_search_20250305",
+                "name": "web_search",
+                "max_uses": 2,
+                "user_location": {
+                    "type": "approximate",
+                    "country": "FI",
+                    "timezone": "Europe/Helsinki",
+                },
+            }
+        ],
+        "tool_choice": {"type": "auto"},
+    }
+    request_model = parse_claude_messages_request(
+        payload, allow_unknown_fields=config.anthropic_allow_unknown_fields
+    )
+    converted = convert_claude_to_openai(request_model, model_manager)
+    tools = converted.get("tools")
+    assert isinstance(tools, list) and len(tools) == 1, converted
+    web_search_tool = tools[0]
+    assert web_search_tool.get("type") == "web_search_20250305", web_search_tool
+    assert web_search_tool.get("name") == "web_search", web_search_tool
+    assert web_search_tool.get("max_uses") == 2, web_search_tool
+    assert web_search_tool.get("user_location", {}).get("country") == "FI", web_search_tool
+    assert converted.get("tool_choice") == "auto", converted
+
+
+async def test_request_converter_supports_mixed_function_and_web_search_tools() -> None:
+    payload = {
+        "model": "claude-3-5-sonnet-20241022",
+        "max_tokens": 64,
+        "messages": [{"role": "user", "content": "Use available tools"}],
+        "tools": [
+            {
+                "name": "weather",
+                "description": "Get weather for a city",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {"city": {"type": "string"}},
+                    "required": ["city"],
+                },
+            },
+            {
+                "type": "web_search_20250305",
+                "name": "web_search",
+                "max_uses": 1,
+            },
+        ],
+        "tool_choice": {"type": "tool", "name": "weather"},
+    }
+    request_model = parse_claude_messages_request(
+        payload, allow_unknown_fields=config.anthropic_allow_unknown_fields
+    )
+    converted = convert_claude_to_openai(request_model, model_manager)
+    tools = converted.get("tools")
+    assert isinstance(tools, list) and len(tools) == 2, converted
+
+    function_tool = tools[0]
+    assert function_tool.get("type") == "function", function_tool
+    assert function_tool.get("function", {}).get("name") == "weather", function_tool
+    assert (
+        function_tool.get("function", {}).get("parameters", {}).get("type") == "object"
+    ), function_tool
+
+    web_search_tool = tools[1]
+    assert web_search_tool.get("type") == "web_search_20250305", web_search_tool
+    assert web_search_tool.get("name") == "web_search", web_search_tool
+    assert web_search_tool.get("max_uses") == 1, web_search_tool
+
+    tool_choice = converted.get("tool_choice")
+    assert isinstance(tool_choice, dict), converted
+    assert tool_choice.get("type") == "function", tool_choice
+    assert tool_choice.get("function", {}).get("name") == "weather", tool_choice
+
+
+async def test_request_converter_does_not_map_native_web_search_tool_choice_to_function() -> None:
+    payload = {
+        "model": "claude-3-5-sonnet-20241022",
+        "max_tokens": 64,
+        "messages": [{"role": "user", "content": "Search for current weather"}],
+        "tools": [
+            {
+                "name": "weather",
+                "description": "Get weather for a city",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {"city": {"type": "string"}},
+                    "required": ["city"],
+                },
+            },
+            {
+                "type": "web_search_20250305",
+                "name": "web_search",
+                "max_uses": 1,
+            },
+        ],
+        "tool_choice": {"type": "tool", "name": "web_search"},
+    }
+    request_model = parse_claude_messages_request(
+        payload, allow_unknown_fields=config.anthropic_allow_unknown_fields
+    )
+    converted = convert_claude_to_openai(request_model, model_manager)
+    assert "tool_choice" not in converted, converted
+
+
 async def test_tool_result_document_url_and_file_normalization() -> None:
     normalized = parse_tool_result_content(
         [
@@ -1039,8 +1224,26 @@ async def main() -> None:
     await test_token_count_includes_tools_and_thinking()
     print("- count_tokens tools/thinking weighting check passed")
 
+    await test_token_count_accepts_native_web_search_tool()
+    print("- count_tokens native web_search tool check passed")
+
+    await test_token_count_rejects_web_search_conflicting_domain_filters()
+    print("- count_tokens web_search domain filter validation check passed")
+
+    await test_messages_native_web_search_skips_schema_validation_errors()
+    print("- native web_search /v1/messages parse-path check passed")
+
     await test_request_converter_supports_image_url_sources()
     print("- request converter image url support check passed")
+
+    await test_request_converter_supports_native_web_search_tool()
+    print("- request converter native web_search tool support check passed")
+
+    await test_request_converter_supports_mixed_function_and_web_search_tools()
+    print("- request converter mixed function+web_search tool support check passed")
+
+    await test_request_converter_does_not_map_native_web_search_tool_choice_to_function()
+    print("- request converter native web_search tool_choice handling check passed")
 
     await test_tool_result_document_url_and_file_normalization()
     print("- tool_result document url/file normalization check passed")

@@ -158,11 +158,38 @@ class ClaudeMessage(StrictBaseModel):
         return self
 
 
-class ClaudeTool(StrictBaseModel):
+class ClaudeFunctionTool(StrictBaseModel):
     name: str
     description: Optional[str] = None
     input_schema: Dict[str, Any]
     input_examples: Optional[List[Dict[str, Any]]] = None
+
+
+class ClaudeWebSearchUserLocation(StrictBaseModel):
+    type: Literal["approximate"]
+    city: Optional[str] = None
+    region: Optional[str] = None
+    country: Optional[str] = None
+    timezone: Optional[str] = None
+
+
+class ClaudeWebSearchTool(StrictBaseModel):
+    type: str = Field(pattern=r"^web_search(_\d{8})?$")
+    name: Literal["web_search"]
+    max_uses: Optional[int] = Field(default=None, ge=1)
+    allowed_domains: Optional[List[str]] = None
+    blocked_domains: Optional[List[str]] = None
+    user_location: Optional[ClaudeWebSearchUserLocation] = None
+    cache_control: Optional[ClaudeCacheControl] = None
+
+    @model_validator(mode="after")
+    def validate_domain_filters(self) -> "ClaudeWebSearchTool":
+        if self.allowed_domains and self.blocked_domains:
+            raise ValueError("web_search tool cannot set both allowed_domains and blocked_domains")
+        return self
+
+
+ClaudeTool = Union[ClaudeFunctionTool, ClaudeWebSearchTool]
 
 
 class ClaudeMetadata(StrictBaseModel):

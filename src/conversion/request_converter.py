@@ -14,11 +14,17 @@ from src.models.claude import (
     ClaudeContentBlockThinking,
     ClaudeContentBlockToolResult,
     ClaudeContentBlockToolUse,
+    ClaudeFunctionTool,
     ClaudeMessage,
     ClaudeMessageContentBlock,
     ClaudeMessagesRequestModel,
     ClaudeSystemContent,
     ClaudeTool,
+    ClaudeToolChoiceAny,
+    ClaudeToolChoiceAuto,
+    ClaudeToolChoiceNone,
+    ClaudeToolChoiceTool,
+    ClaudeWebSearchTool,
 )
 
 logger = logging.getLogger(__name__)
@@ -123,24 +129,45 @@ def convert_claude_to_openai(
 
     if claude_request.tool_choice:
         tool_choice = claude_request.tool_choice
-        if tool_choice.type == "auto":
-            openai_request["tool_choice"] = "auto"
-            if tool_choice.disable_parallel_tool_use is not None:
-                openai_request["parallel_tool_calls"] = not tool_choice.disable_parallel_tool_use
-        elif tool_choice.type == "any":
-            openai_request["tool_choice"] = "required"
-            if tool_choice.disable_parallel_tool_use is not None:
-                openai_request["parallel_tool_calls"] = not tool_choice.disable_parallel_tool_use
-        elif tool_choice.type == "tool":
-            openai_request["tool_choice"] = {
-                "type": Constants.TOOL_FUNCTION,
-                Constants.TOOL_FUNCTION: {"name": tool_choice.name},
-            }
-            if tool_choice.disable_parallel_tool_use is not None:
-                openai_request["parallel_tool_calls"] = not tool_choice.disable_parallel_tool_use
-        elif tool_choice.type == "none":
-            openai_request["tool_choice"] = "none"
+        function_tool_names = {
+            tool.name
+            for tool in (claude_request.tools or [])
+            if isinstance(tool, ClaudeFunctionTool)
+        }
+        has_native_web_search_tools = any(
+            isinstance(tool, ClaudeWebSearchTool) for tool in (claude_request.tools or [])
+        )
 
+        if isinstance(tool_choice, ClaudeToolChoiceAuto):
+            openai_request["tool_choice"] = "auto"
+        elif isinstance(tool_choice, ClaudeToolChoiceAny):
+            openai_request["tool_choice"] = "required"
+        elif isinstance(tool_choice, ClaudeToolChoiceNone):
+            openai_request["tool_choice"] = "none"
+        elif isinstance(tool_choice, ClaudeToolChoiceTool):
+            should_ignore_native_web_search_tool_choice = has_native_web_search_tools and (
+                not function_tool_names
+                or (
+                    tool_choice.name == "web_search" and tool_choice.name not in function_tool_names
+                )
+            )
+            if should_ignore_native_web_search_tool_choice:
+                logger.info(
+                    "Ignoring tool_choice type='tool' for native web_search tools because no matching function tool is present"
+                )
+            else:
+                openai_request["tool_choice"] = {
+                    "type": Constants.TOOL_FUNCTION,
+                    Constants.TOOL_FUNCTION: {"name": tool_choice.name},
+                }
+
+        if (
+            isinstance(
+                tool_choice, (ClaudeToolChoiceAuto, ClaudeToolChoiceAny, ClaudeToolChoiceTool)
+            )
+            and tool_choice.disable_parallel_tool_use is not None
+        ):
+            openai_request["parallel_tool_calls"] = not tool_choice.disable_parallel_tool_use
     logger.debug(
         "Converted Claude request to OpenAI format: %s",
         json.dumps(openai_request, ensure_ascii=False),
@@ -392,17 +419,37 @@ def _convert_system_content(
 
 
 def _convert_tool_definition(tool: ClaudeTool) -> Dict[str, Any]:
-    function_payload: Dict[str, Any] = {
-        "name": tool.name,
-        "parameters": tool.input_schema,
-    }
-    if tool.description:
-        function_payload["description"] = tool.description
+    if isinstance(tool, ClaudeFunctionTool):
+        function_payload: Dict[str, Any] = {
+            "name": tool.name,
+            "parameters": tool.input_schema,
+        }
+        if tool.description:
+            function_payload["description"] = tool.description
 
-    return {
-        "type": Constants.TOOL_FUNCTION,
-        Constants.TOOL_FUNCTION: function_payload,
-    }
+        return {
+            "type": Constants.TOOL_FUNCTION,
+            Constants.TOOL_FUNCTION: function_payload,
+        }
+
+    if isinstance(tool, ClaudeWebSearchTool):
+        web_search_payload: Dict[str, Any] = {
+            "type": tool.type,
+            "name": tool.name,
+        }
+        if tool.max_uses is not None:
+            web_search_payload["max_uses"] = tool.max_uses
+        if tool.allowed_domains is not None:
+            web_search_payload["allowed_domains"] = tool.allowed_domains
+        if tool.blocked_domains is not None:
+            web_search_payload["blocked_domains"] = tool.blocked_domains
+        if tool.user_location is not None:
+            web_search_payload["user_location"] = tool.user_location.model_dump(exclude_none=True)
+        if tool.cache_control is not None:
+            web_search_payload["cache_control"] = tool.cache_control.model_dump(exclude_none=True)
+        return web_search_payload
+
+    raise ValueError("Unsupported tool definition for conversion")
 
 
 def _as_user_content_block(block: ClaudeMessageContentBlock) -> UserContentBlock:
