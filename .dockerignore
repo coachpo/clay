@@ -1,0 +1,36 @@
+# VCS and CI metadata
+.git
+.github
+
+# Local development environment
+.env
+.env.*
+!.env.example
+.venv
+venv
+env
+ENV
+.python-version
+
+# Python and tooling caches
+__pycache__
+*.py[cod]
+*.pyo
+*.pyd
+.mypy_cache
+.pytest_cache
+.ruff_cache
+.tox
+.nox
+.coverage
+htmlcov
+
+# Build outputs
+build
+dist
+*.egg-info
+
+# Local docs and project metadata not needed in image
+AGENTS.md
+tests
+test_cancellation.py

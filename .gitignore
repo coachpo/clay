@@ -1,0 +1,59 @@
+# OS and editor artifacts
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.iml
+
+# Environment and local secrets
+.env
+.env.*
+!.env.example
+
+# Python bytecode and caches
+__pycache__/
+*.py[cod]
+*$py.class
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+.hypothesis/
+.pytype/
+.pyre/
+.nox/
+.tox/
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Build and packaging artifacts
+build/
+dist/
+site/
+.eggs/
+*.egg-info/
+*.egg
+pip-wheel-metadata/
+wheels/
+
+# Coverage and test artifacts
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+.cache/
+
+# Runtime files
+*.log
+*.pid
+*.pid.lock
+*.out
+*.err
+
+# Tool-specific files
+.python-version
+poetry.toml
+pyrightconfig.json
