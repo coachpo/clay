@@ -278,7 +278,7 @@ class _ClaudeMessagesRequestFields(BaseModel):
     system: Optional[Union[str, List[ClaudeSystemContent]]] = None
     stop_sequences: Optional[List[str]] = None
     stream: bool = False
-    temperature: Optional[float] = Field(default=1.0, ge=0.0, le=1.0)
+    temperature: Optional[float] = Field(default=None, ge=0.0, le=1.0)
     top_p: Optional[float] = Field(default=None, ge=0.0, le=1.0)
     top_k: Optional[int] = Field(default=None, ge=1)
     output_config: Optional[ClaudeOutputConfig] = None

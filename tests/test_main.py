@@ -302,6 +302,25 @@ def _bad_request_error(message: str) -> BadRequestError:
     )
 
 
+def test_openai_client_normalizes_root_base_url_to_v1() -> None:
+    client = OpenAIClient(api_key="sk-test", base_url="https://api.duckcoding.ai")
+    assert client.base_url == "https://api.duckcoding.ai/v1", client.base_url
+
+
+def test_openai_client_preserves_explicit_versioned_base_url() -> None:
+    client = OpenAIClient(api_key="sk-test", base_url="https://codex-api.packycode.com/v1")
+    assert client.base_url == "https://codex-api.packycode.com/v1", client.base_url
+
+
+def test_openai_client_keeps_raw_base_url_for_azure_mode() -> None:
+    client = OpenAIClient(
+        api_key="sk-test",
+        base_url="https://example-resource.openai.azure.com",
+        api_version="2024-10-21",
+    )
+    assert client.base_url == "https://example-resource.openai.azure.com", client.base_url
+
+
 async def test_missing_anthropic_version_header() -> None:
     async with httpx.AsyncClient() as client:
         response = await client.post(
@@ -683,6 +702,51 @@ async def test_messages_accepts_adaptive_thinking_for_claude_opus_4_6() -> None:
     _assert_request_id_headers(response)
     assert stub_client.last_request is not None
     assert "reasoning" not in stub_client.last_request, stub_client.last_request
+
+
+async def test_messages_omitted_temperature_is_not_forwarded() -> None:
+    stub_client = _StubOpenAIClientForMessages()
+    original_client = api_endpoints.openai_client
+    api_endpoints.openai_client = stub_client
+    try:
+        response = await _post_messages_in_process(
+            {
+                "model": "claude-opus-4-6",
+                "max_tokens": 64,
+                "messages": [{"role": "user", "content": "No explicit temperature"}],
+                "thinking": {"type": "adaptive"},
+            }
+        )
+    finally:
+        api_endpoints.openai_client = original_client
+
+    assert 200 <= response.status_code < 300, response.text
+    _assert_request_id_headers(response)
+    assert stub_client.last_request is not None
+    assert "temperature" not in stub_client.last_request, stub_client.last_request
+
+
+async def test_messages_explicit_temperature_is_forwarded() -> None:
+    stub_client = _StubOpenAIClientForMessages()
+    original_client = api_endpoints.openai_client
+    api_endpoints.openai_client = stub_client
+    try:
+        response = await _post_messages_in_process(
+            {
+                "model": "claude-opus-4-6",
+                "max_tokens": 64,
+                "temperature": 0.2,
+                "messages": [{"role": "user", "content": "Explicit temperature"}],
+                "thinking": {"type": "adaptive"},
+            }
+        )
+    finally:
+        api_endpoints.openai_client = original_client
+
+    assert 200 <= response.status_code < 300, response.text
+    _assert_request_id_headers(response)
+    assert stub_client.last_request is not None
+    assert stub_client.last_request.get("temperature") == 0.2, stub_client.last_request
 
 
 async def test_messages_maps_max_effort_to_openai_xhigh() -> None:
@@ -1552,6 +1616,15 @@ async def main() -> None:
     await test_missing_anthropic_version_header()
     print("- missing anthropic-version header check passed")
 
+    test_openai_client_normalizes_root_base_url_to_v1()
+    print("- openai client base-url normalization check passed")
+
+    test_openai_client_preserves_explicit_versioned_base_url()
+    print("- openai client explicit base-url passthrough check passed")
+
+    test_openai_client_keeps_raw_base_url_for_azure_mode()
+    print("- openai client azure-mode base-url passthrough check passed")
+
     await test_retries_without_metadata_on_unsupported_parameter_error()
     print("- metadata fallback (metadata) retry check passed")
 
@@ -1593,6 +1666,12 @@ async def main() -> None:
 
     await test_messages_accepts_adaptive_thinking_for_claude_opus_4_6()
     print("- messages adaptive thinking support (claude-opus-4-6) check passed")
+
+    await test_messages_omitted_temperature_is_not_forwarded()
+    print("- messages omitted temperature passthrough check passed")
+
+    await test_messages_explicit_temperature_is_forwarded()
+    print("- messages explicit temperature passthrough check passed")
 
     await test_messages_maps_max_effort_to_openai_xhigh()
     print("- messages adaptive max effort maps to xhigh check passed")

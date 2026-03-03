@@ -1,6 +1,7 @@
 import asyncio
 import logging
 from typing import Any, AsyncGenerator, Dict, Optional
+from urllib.parse import urlsplit, urlunsplit
 
 from fastapi import HTTPException
 from openai import AsyncAzureOpenAI, AsyncOpenAI
@@ -26,13 +27,16 @@ class OpenAIClient:
         api_version: Optional[str] = None,
     ) -> None:
         self.api_key = api_key
-        self.base_url = base_url
+        if api_version:
+            self.base_url = base_url.strip()
+        else:
+            self.base_url = self._normalize_base_url(base_url)
 
         self.client: Any
         if api_version:
             self.client = AsyncAzureOpenAI(
                 api_key=api_key,
-                azure_endpoint=base_url,
+                azure_endpoint=self.base_url,
                 api_version=api_version,
                 timeout=timeout,
                 max_retries=max_retries,
@@ -40,12 +44,25 @@ class OpenAIClient:
         else:
             self.client = AsyncOpenAI(
                 api_key=api_key,
-                base_url=base_url,
+                base_url=self.base_url,
                 timeout=timeout,
                 max_retries=max_retries,
             )
 
         self.active_requests: Dict[str, asyncio.Event] = {}
+
+    @staticmethod
+    def _normalize_base_url(base_url: str) -> str:
+        raw = base_url.strip()
+        if not raw:
+            return raw
+
+        parsed = urlsplit(raw)
+        path = parsed.path.rstrip("/")
+        if path in {"", "/"}:
+            path = "/v1"
+
+        return urlunsplit((parsed.scheme, parsed.netloc, path, parsed.query, parsed.fragment))
 
     @staticmethod
     def _is_unsupported_parameter_error(error: BadRequestError, parameter: str) -> bool:
