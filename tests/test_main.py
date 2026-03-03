@@ -517,6 +517,57 @@ async def test_retries_without_context_management_on_retryable_server_error() ->
     assert "context_management" not in calls[1]
 
 
+async def test_retries_without_proxy_metadata_context_management_on_retryable_server_error() -> (
+    None
+):
+    client = OpenAIClient(api_key="sk-test", base_url="https://example.com")
+    calls: List[Dict[str, Any]] = []
+    sentinel = object()
+    upstream_502_error = _api_status_error("Bad gateway", status_code=502)
+
+    async def fake_create(**kwargs: Any) -> Any:
+        calls.append(dict(kwargs))
+        if len(calls) == 1:
+            raise upstream_502_error
+        return sentinel
+
+    client.client = SimpleNamespace(responses=SimpleNamespace(create=fake_create))
+
+    request = {
+        "model": "gpt-4.1",
+        "input": [
+            {
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_text", "text": "hello"}],
+            }
+        ],
+        "context_management": [{"type": "compaction", "compact_threshold": 200000}],
+        "extra_body": {
+            "proxy_metadata": {
+                "anthropic_extensions": {
+                    "context_management": {"edits": [{"type": "clear_tool_uses_20250919"}]}
+                },
+                "original_anthropic_request": {
+                    "context_management": {"edits": [{"type": "clear_tool_uses_20250919"}]}
+                },
+            }
+        },
+    }
+
+    result = await client._create_with_metadata_fallback(request)
+    assert result is sentinel
+    assert len(calls) == 2
+    assert "context_management" in calls[0]
+    assert "context_management" not in calls[1]
+
+    retry_extra_body = calls[1].get("extra_body", {})
+    retry_proxy_metadata = retry_extra_body.get("proxy_metadata", {})
+    retry_extensions = retry_proxy_metadata.get("anthropic_extensions", {})
+    assert "context_management" not in retry_extensions
+    assert "original_anthropic_request" not in retry_proxy_metadata
+
+
 async def test_does_not_retry_for_non_retryable_api_status_error() -> None:
     client = OpenAIClient(api_key="sk-test", base_url="https://example.com")
     calls: List[Dict[str, Any]] = []
@@ -1855,6 +1906,11 @@ async def main() -> None:
     await test_retries_without_context_management_on_retryable_server_error()
     print(
         "- metadata fallback retries on retryable server errors with context_management check passed"
+    )
+
+    await test_retries_without_proxy_metadata_context_management_on_retryable_server_error()
+    print(
+        "- metadata fallback retries on retryable server errors with proxy metadata context_management check passed"
     )
 
     await test_does_not_retry_for_non_retryable_api_status_error()

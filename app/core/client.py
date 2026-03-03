@@ -105,14 +105,11 @@ class OpenAIClient:
         if trigger_field is None:
             return request, (), None
 
-        next_request = dict(request)
-        removed_fields: list[str] = []
-        for field in fallback_fields:
-            if field in next_request:
-                next_request.pop(field, None)
-                removed_fields.append(field)
+        next_request, removed_fields = self._remove_present_optional_fields(
+            request, fallback_fields
+        )
 
-        return next_request, tuple(removed_fields), trigger_field
+        return next_request, removed_fields, trigger_field
 
     @staticmethod
     def _remove_present_optional_fields(
@@ -125,6 +122,40 @@ class OpenAIClient:
             if field in next_request:
                 next_request.pop(field, None)
                 removed_fields.append(field)
+
+        extra_body = next_request.get("extra_body")
+        if isinstance(extra_body, dict):
+            next_extra_body = dict(extra_body)
+            proxy_metadata = next_extra_body.get("proxy_metadata")
+            if isinstance(proxy_metadata, dict):
+                next_proxy_metadata = dict(proxy_metadata)
+                anthropic_extensions = next_proxy_metadata.get("anthropic_extensions")
+                if isinstance(anthropic_extensions, dict):
+                    next_anthropic_extensions = dict(anthropic_extensions)
+                    if "context_management" in next_anthropic_extensions:
+                        next_anthropic_extensions.pop("context_management", None)
+                        removed_fields.append(
+                            "extra_body.proxy_metadata.anthropic_extensions.context_management"
+                        )
+                    if next_anthropic_extensions:
+                        next_proxy_metadata["anthropic_extensions"] = next_anthropic_extensions
+                    else:
+                        next_proxy_metadata.pop("anthropic_extensions", None)
+
+                if "original_anthropic_request" in next_proxy_metadata:
+                    next_proxy_metadata.pop("original_anthropic_request", None)
+                    removed_fields.append("extra_body.proxy_metadata.original_anthropic_request")
+
+                if next_proxy_metadata:
+                    next_extra_body["proxy_metadata"] = next_proxy_metadata
+                else:
+                    next_extra_body.pop("proxy_metadata", None)
+
+            if next_extra_body:
+                next_request["extra_body"] = next_extra_body
+            else:
+                next_request.pop("extra_body", None)
+
         return next_request, tuple(removed_fields)
 
     @staticmethod
