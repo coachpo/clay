@@ -1853,7 +1853,9 @@ async def main() -> None:
     print("- metadata fallback does not retry unrelated bad requests check passed")
 
     await test_retries_without_context_management_on_retryable_server_error()
-    print("- metadata fallback retries on retryable server errors with context_management check passed")
+    print(
+        "- metadata fallback retries on retryable server errors with context_management check passed"
+    )
 
     await test_does_not_retry_for_non_retryable_api_status_error()
     print("- metadata fallback does not retry non-retryable API status errors check passed")
