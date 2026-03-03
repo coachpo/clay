@@ -122,52 +122,34 @@ class OpenAIClient:
             if field in next_request:
                 next_request.pop(field, None)
                 removed_fields.append(field)
-
-        extra_body = next_request.get("extra_body")
-        if isinstance(extra_body, dict):
-            next_extra_body = dict(extra_body)
-            proxy_metadata = next_extra_body.get("proxy_metadata")
-            if isinstance(proxy_metadata, dict):
-                next_proxy_metadata = dict(proxy_metadata)
-                anthropic_extensions = next_proxy_metadata.get("anthropic_extensions")
-                if isinstance(anthropic_extensions, dict):
-                    next_anthropic_extensions = dict(anthropic_extensions)
-                    if "context_management" in next_anthropic_extensions:
-                        next_anthropic_extensions.pop("context_management", None)
-                        removed_fields.append(
-                            "extra_body.proxy_metadata.anthropic_extensions.context_management"
-                        )
-                    if next_anthropic_extensions:
-                        next_proxy_metadata["anthropic_extensions"] = next_anthropic_extensions
-                    else:
-                        next_proxy_metadata.pop("anthropic_extensions", None)
-
-                if "original_anthropic_request" in next_proxy_metadata:
-                    next_proxy_metadata.pop("original_anthropic_request", None)
-                    removed_fields.append("extra_body.proxy_metadata.original_anthropic_request")
-
-                if next_proxy_metadata:
-                    next_extra_body["proxy_metadata"] = next_proxy_metadata
-                else:
-                    next_extra_body.pop("proxy_metadata", None)
-
-            if next_extra_body:
-                next_request["extra_body"] = next_extra_body
-            else:
-                next_request.pop("extra_body", None)
-
         return next_request, tuple(removed_fields)
 
     @staticmethod
     def _is_retryable_server_status(error: APIError) -> bool:
         status_code = getattr(error, "status_code", None)
-        return isinstance(status_code, int) and status_code in {500, 502, 503, 504}
+        return isinstance(status_code, int) and status_code in {
+            500,
+            502,
+            503,
+            504,
+            520,
+            521,
+            522,
+            523,
+            524,
+            525,
+            526,
+            527,
+            529,
+        }
 
     async def _create_with_metadata_fallback(self, request: Dict[str, Any]) -> Any:
         # Some OpenAI-compatible providers reject selected optional request fields.
         # Retry once without all known compatibility fields when any one is rejected.
         retry_request = dict(request)
-        fallback_fields = ("metadata", "context_management")
+        # These are compatibility-only fields; if upstream rejects them or emits transient gateway
+        # failures, retry once without them to maximize request success.
+        fallback_fields = ("metadata", "context_management", "extra_body")
 
         try:
             return await self.client.responses.create(**retry_request)

@@ -413,6 +413,41 @@ async def test_retries_without_context_management_on_unsupported_parameter_error
     assert "context_management" not in calls[1]
 
 
+async def test_retries_without_extra_body_on_unsupported_parameter_error() -> None:
+    client = OpenAIClient(api_key="sk-test", base_url="https://example.com")
+    calls: List[Dict[str, Any]] = []
+    sentinel = object()
+    unsupported_extra_body_error = _bad_request_error("Unsupported parameter: extra_body")
+
+    async def fake_create(**kwargs: Any) -> Any:
+        calls.append(dict(kwargs))
+        if len(calls) == 1:
+            raise unsupported_extra_body_error
+        return sentinel
+
+    client.client = SimpleNamespace(responses=SimpleNamespace(create=fake_create))
+
+    request = {
+        "model": "gpt-4.1",
+        "input": [
+            {
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_text", "text": "hello"}],
+            }
+        ],
+        "extra_body": {
+            "proxy_metadata": {"anthropic_extensions": {"thinking": {"type": "adaptive"}}}
+        },
+    }
+
+    result = await client._create_with_metadata_fallback(request)
+    assert result is sentinel
+    assert len(calls) == 2
+    assert "extra_body" in calls[0]
+    assert "extra_body" not in calls[1]
+
+
 async def test_retries_once_without_all_optional_fields_when_any_optional_field_is_rejected() -> (
     None
 ):
@@ -561,11 +596,52 @@ async def test_retries_without_proxy_metadata_context_management_on_retryable_se
     assert "context_management" in calls[0]
     assert "context_management" not in calls[1]
 
-    retry_extra_body = calls[1].get("extra_body", {})
-    retry_proxy_metadata = retry_extra_body.get("proxy_metadata", {})
-    retry_extensions = retry_proxy_metadata.get("anthropic_extensions", {})
-    assert "context_management" not in retry_extensions
-    assert "original_anthropic_request" not in retry_proxy_metadata
+    assert "extra_body" not in calls[1]
+
+
+async def test_retries_without_extra_body_on_retryable_server_error() -> None:
+    client = OpenAIClient(api_key="sk-test", base_url="https://example.com")
+    calls: List[Dict[str, Any]] = []
+    sentinel = object()
+    upstream_502_error = _api_status_error("Bad gateway", status_code=502)
+
+    async def fake_create(**kwargs: Any) -> Any:
+        calls.append(dict(kwargs))
+        if len(calls) == 1:
+            raise upstream_502_error
+        return sentinel
+
+    client.client = SimpleNamespace(responses=SimpleNamespace(create=fake_create))
+
+    request = {
+        "model": "gpt-4.1",
+        "input": [
+            {
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_text", "text": "hello"}],
+            }
+        ],
+        "extra_body": {
+            "proxy_metadata": {"anthropic_extensions": {"thinking": {"type": "adaptive"}}}
+        },
+    }
+
+    result = await client._create_with_metadata_fallback(request)
+    assert result is sentinel
+    assert len(calls) == 2
+    assert "extra_body" in calls[0]
+    assert "extra_body" not in calls[1]
+
+
+def test_retryable_server_status_includes_cloudflare_and_529() -> None:
+    for status in [500, 502, 503, 504, 520, 521, 522, 523, 524, 525, 526, 527, 529]:
+        error = _api_status_error("retryable", status)
+        assert OpenAIClient._is_retryable_server_status(error) is True
+
+    for status in [400, 401, 403, 404, 408, 409, 422, 429]:
+        error = _api_status_error("not-retryable", status)
+        assert OpenAIClient._is_retryable_server_status(error) is False
 
 
 async def test_does_not_retry_for_non_retryable_api_status_error() -> None:
@@ -1897,6 +1973,9 @@ async def main() -> None:
     await test_retries_without_context_management_on_unsupported_parameter_error()
     print("- metadata fallback (context_management) retry check passed")
 
+    await test_retries_without_extra_body_on_unsupported_parameter_error()
+    print("- metadata fallback (extra_body) retry check passed")
+
     await test_retries_once_without_all_optional_fields_when_any_optional_field_is_rejected()
     print("- metadata fallback removes optional fields in single retry check passed")
 
@@ -1912,6 +1991,12 @@ async def main() -> None:
     print(
         "- metadata fallback retries on retryable server errors with proxy metadata context_management check passed"
     )
+
+    await test_retries_without_extra_body_on_retryable_server_error()
+    print("- metadata fallback retries on retryable server errors with extra_body check passed")
+
+    test_retryable_server_status_includes_cloudflare_and_529()
+    print("- retryable server status set includes cloudflare 52x and 529 check passed")
 
     await test_does_not_retry_for_non_retryable_api_status_error()
     print("- metadata fallback does not retry non-retryable API status errors check passed")
