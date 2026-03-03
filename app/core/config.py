@@ -77,6 +77,21 @@ class Config:
         )
         if self.openai_responses_state_mode not in {"stateless", "provider"}:
             raise ValueError("OPENAI_RESPONSES_STATE_MODE must be either 'stateless' or 'provider'")
+        self.openai_gpt5_sampling_reasoning_compat_mode = (
+            os.environ.get("OPENAI_GPT5_SAMPLING_REASONING_COMPAT_MODE", "drop_sampling")
+            .strip()
+            .lower()
+        )
+        if self.openai_gpt5_sampling_reasoning_compat_mode not in {
+            "off",
+            "drop_sampling",
+            "force_reasoning_none",
+            "strict_error",
+        }:
+            raise ValueError(
+                "OPENAI_GPT5_SAMPLING_REASONING_COMPAT_MODE must be one of "
+                "'off', 'drop_sampling', 'force_reasoning_none', 'strict_error'"
+            )
 
     def validate_api_key(self) -> bool:
         """Basic API key validation."""

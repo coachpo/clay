@@ -775,6 +775,119 @@ async def test_messages_explicit_temperature_scales_to_x2_when_enabled() -> None
     assert stub_client.last_request.get("temperature") == 0.4, stub_client.last_request
 
 
+async def test_messages_drops_sampling_fields_when_reasoning_conflicts_by_default() -> None:
+    stub_client = _StubOpenAIClientForMessages()
+    original_client = api_endpoints.openai_client
+    original_mode = config.openai_gpt5_sampling_reasoning_compat_mode
+    api_endpoints.openai_client = stub_client
+    config.openai_gpt5_sampling_reasoning_compat_mode = "drop_sampling"
+    try:
+        response = await _post_messages_in_process(
+            {
+                "model": "claude-opus-4-6",
+                "max_tokens": 64,
+                "temperature": 0.2,
+                "top_p": 0.9,
+                "messages": [{"role": "user", "content": "Conflict for drop mode"}],
+                "thinking": {"type": "adaptive"},
+                "output_config": {"effort": "max"},
+            }
+        )
+    finally:
+        config.openai_gpt5_sampling_reasoning_compat_mode = original_mode
+        api_endpoints.openai_client = original_client
+
+    assert 200 <= response.status_code < 300, response.text
+    _assert_request_id_headers(response)
+    assert stub_client.last_request is not None
+    assert "temperature" not in stub_client.last_request, stub_client.last_request
+    assert "top_p" not in stub_client.last_request, stub_client.last_request
+    reasoning = stub_client.last_request.get("reasoning")
+    assert isinstance(reasoning, dict), stub_client.last_request
+    assert reasoning.get("effort") == "xhigh", stub_client.last_request
+
+
+async def test_messages_force_reasoning_none_when_sampling_conflicts() -> None:
+    stub_client = _StubOpenAIClientForMessages()
+    original_client = api_endpoints.openai_client
+    original_mode = config.openai_gpt5_sampling_reasoning_compat_mode
+    api_endpoints.openai_client = stub_client
+    config.openai_gpt5_sampling_reasoning_compat_mode = "force_reasoning_none"
+    try:
+        response = await _post_messages_in_process(
+            {
+                "model": "claude-opus-4-6",
+                "max_tokens": 64,
+                "temperature": 0.2,
+                "messages": [{"role": "user", "content": "Conflict for force-none mode"}],
+                "thinking": {"type": "adaptive"},
+                "output_config": {"effort": "max"},
+            }
+        )
+    finally:
+        config.openai_gpt5_sampling_reasoning_compat_mode = original_mode
+        api_endpoints.openai_client = original_client
+
+    assert 200 <= response.status_code < 300, response.text
+    _assert_request_id_headers(response)
+    assert stub_client.last_request is not None
+    assert stub_client.last_request.get("temperature") == 0.2, stub_client.last_request
+    reasoning = stub_client.last_request.get("reasoning")
+    assert isinstance(reasoning, dict), stub_client.last_request
+    assert reasoning.get("effort") == "none", stub_client.last_request
+
+
+async def test_messages_strict_error_when_sampling_conflicts() -> None:
+    original_mode = config.openai_gpt5_sampling_reasoning_compat_mode
+    config.openai_gpt5_sampling_reasoning_compat_mode = "strict_error"
+    try:
+        response = await _post_messages_in_process(
+            {
+                "model": "claude-opus-4-6",
+                "max_tokens": 64,
+                "temperature": 0.2,
+                "messages": [{"role": "user", "content": "Conflict for strict mode"}],
+                "thinking": {"type": "adaptive"},
+                "output_config": {"effort": "max"},
+            }
+        )
+    finally:
+        config.openai_gpt5_sampling_reasoning_compat_mode = original_mode
+
+    payload = _assert_anthropic_error_shape(response, expected_status=400)
+    message = payload["error"].get("message", "")
+    assert "Sampling fields temperature/top_p are not supported" in message, payload
+
+
+async def test_messages_non_gpt5_model_keeps_sampling_fields() -> None:
+    stub_client = _StubOpenAIClientForMessages()
+    original_client = api_endpoints.openai_client
+    original_mode = config.openai_gpt5_sampling_reasoning_compat_mode
+    api_endpoints.openai_client = stub_client
+    config.openai_gpt5_sampling_reasoning_compat_mode = "drop_sampling"
+    try:
+        response = await _post_messages_in_process(
+            {
+                "model": "gpt-4o",
+                "max_tokens": 64,
+                "temperature": 0.2,
+                "messages": [{"role": "user", "content": "Non-gpt5 model"}],
+                "thinking": {"type": "enabled", "budget_tokens": 1024},
+            }
+        )
+    finally:
+        config.openai_gpt5_sampling_reasoning_compat_mode = original_mode
+        api_endpoints.openai_client = original_client
+
+    assert 200 <= response.status_code < 300, response.text
+    _assert_request_id_headers(response)
+    assert stub_client.last_request is not None
+    assert stub_client.last_request.get("temperature") == 0.2, stub_client.last_request
+    reasoning = stub_client.last_request.get("reasoning")
+    assert isinstance(reasoning, dict), stub_client.last_request
+    assert reasoning.get("effort") == "high", stub_client.last_request
+
+
 async def test_messages_maps_max_effort_to_openai_xhigh() -> None:
     stub_client = _StubOpenAIClientForMessages()
     original_client = api_endpoints.openai_client
@@ -1701,6 +1814,18 @@ async def main() -> None:
 
     await test_messages_explicit_temperature_scales_to_x2_when_enabled()
     print("- messages explicit temperature x2 scaling check passed")
+
+    await test_messages_drops_sampling_fields_when_reasoning_conflicts_by_default()
+    print("- messages gpt5 default drop_sampling conflict handling check passed")
+
+    await test_messages_force_reasoning_none_when_sampling_conflicts()
+    print("- messages gpt5 force_reasoning_none conflict handling check passed")
+
+    await test_messages_strict_error_when_sampling_conflicts()
+    print("- messages gpt5 strict_error conflict handling check passed")
+
+    await test_messages_non_gpt5_model_keeps_sampling_fields()
+    print("- messages non-gpt5 sampling passthrough check passed")
 
     await test_messages_maps_max_effort_to_openai_xhigh()
     print("- messages adaptive max effort maps to xhigh check passed")

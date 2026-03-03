@@ -104,6 +104,11 @@ def convert_claude_to_responses_request(
         thinking=claude_request.thinking,
         output_config=claude_request.output_config,
     )
+    reasoning_effort = _apply_gpt5_sampling_reasoning_compatibility(
+        responses_request=responses_request,
+        model_name=openai_model,
+        reasoning_effort=reasoning_effort,
+    )
     if reasoning_effort is not None:
         responses_request["reasoning"] = {"effort": reasoning_effort}
     if claude_request.context_management is not None:
@@ -512,6 +517,57 @@ def _map_temperature_for_openai(anthropic_temperature: float) -> float:
     if not config.anthropic_temperature_scale_to_openai_x2:
         return anthropic_temperature
     return anthropic_temperature * 2
+
+
+def _is_gpt5_family_model(model_name: str) -> bool:
+    return model_name.strip().lower().startswith("gpt-5")
+
+
+def _apply_gpt5_sampling_reasoning_compatibility(
+    responses_request: Dict[str, Any],
+    model_name: str,
+    reasoning_effort: Optional[str],
+) -> Optional[str]:
+    mode = config.openai_gpt5_sampling_reasoning_compat_mode
+    if mode == "off" or not _is_gpt5_family_model(model_name):
+        return reasoning_effort
+
+    if reasoning_effort in {None, "none"}:
+        return reasoning_effort
+
+    conflicting_fields = [field for field in ("temperature", "top_p") if field in responses_request]
+    if not conflicting_fields:
+        return reasoning_effort
+
+    if mode == "drop_sampling":
+        for field in conflicting_fields:
+            responses_request.pop(field, None)
+        logger.warning(
+            "Dropped sampling fields %s for model '%s' because reasoning effort is '%s' "
+            "under OPENAI_GPT5_SAMPLING_REASONING_COMPAT_MODE=drop_sampling.",
+            ", ".join(conflicting_fields),
+            model_name,
+            reasoning_effort,
+        )
+        return reasoning_effort
+
+    if mode == "force_reasoning_none":
+        logger.warning(
+            "Forcing reasoning effort to 'none' for model '%s' because sampling fields %s were set "
+            "under OPENAI_GPT5_SAMPLING_REASONING_COMPAT_MODE=force_reasoning_none.",
+            model_name,
+            ", ".join(conflicting_fields),
+        )
+        return "none"
+
+    if mode == "strict_error":
+        raise ValueError(
+            "Sampling fields temperature/top_p are not supported with non-none reasoning effort "
+            "for GPT-5 models. Remove sampling fields, force reasoning to none, "
+            "or change OPENAI_GPT5_SAMPLING_REASONING_COMPAT_MODE."
+        )
+
+    return reasoning_effort
 
 
 def _convert_context_management_for_responses(
