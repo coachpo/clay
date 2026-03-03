@@ -2,7 +2,7 @@
 
 ## READ WHEN
 - Modifying any file under `app/**`.
-- Investigating request translation, streaming/cancellation behavior, provider errors, or model routing.
+- Coordinating behavior spanning API + conversion + client + model schemas.
 
 ## CHILD GUIDES
 - `app/api/**` -> `app/api/AGENTS.md`
@@ -12,24 +12,25 @@
 - Nearest child guide overrides this file for local details.
 
 ## MODULE MAP
-- `main.py`: FastAPI app, exception-shape adapters, uvicorn launcher.
-- `api/endpoints.py`: Anthropic `/v1/messages` + `/v1/messages/count_tokens`, OpenAI-compatible `/v1/models*`, contract validation, stream/non-stream dispatch.
-- `core/config.py`: env loading, runtime defaults, compatibility flags, import-time validation gate.
-- `core/client.py`: async provider transport, error mapping, cancellation primitives.
-- `core/model_manager.py`: Claude model-name mapping rules.
-- `conversion/request_converter.py`: Claude payload/tool/result conversion to OpenAI Responses format.
-- `conversion/response_converter.py`: OpenAI responses/SSE conversion back to Claude format.
-- `models/claude.py`: strict request schemas and role/content validators.
-- `models/openai.py`: permissive OpenAI compatibility request models (not currently wired to active routes).
+- `main.py`: FastAPI app assembly, path-aware exception handlers, `clay` CLI runtime entrypoint.
+- `api/endpoints.py`: Anthropic generation routes + OpenAI-compatible models surface + request contract enforcement.
+- `core/config.py`: import-time env/config validation and compatibility feature flags.
+- `core/client.py`: OpenAI/Azure transport, optional-field fallback retry, active-request cancellation map.
+- `core/model_manager.py`: Claude model-name routing to configured target providers/models.
+- `core/logging.py`: shared logging config and uvicorn log-level suppression.
+- `conversion/request_converter.py`: Claude request/tool/thinking/context conversion to OpenAI Responses payload.
+- `conversion/response_converter.py`: Responses/chat chunk normalization back to Claude JSON/SSE contracts.
+- `models/claude.py`: strict Claude schemas + forward-compat variants + role/block validators.
+- `models/openai.py`: permissive compatibility request models (`extra="allow"`).
 
 ## CROSS-MODULE CONTRACTS
-- Preserve request IDs in both headers: `request-id` and `x-request-id`.
-- `/v1/messages` enforces request size, anthropic-version resolution, and JSON content type before provider calls.
-- OpenAI-compatible generation routes are intentionally removed; only `/v1/models*` remains.
-- Token ceilings are clamped through config limits (`MIN_TOKENS_LIMIT` and `MAX_TOKENS_LIMIT`).
-- Tool-call IDs must stay stable between assistant `tool_use` and user `tool_result`.
-- Claude streaming order is strict: `message_start` -> `ping` -> content events -> `message_delta` -> `message_stop`.
-- Disconnect cancellation uses shared `request_id` across API handler, converter, and client map.
+- Preserve request IDs in both headers on Anthropic/OpenAI paths: `request-id` and `x-request-id`.
+- `/v1/messages` enforces size/version/content-type/auth gates before conversion/provider calls.
+- OpenAI generation compatibility routes are intentionally removed (`/v1/chat/completions`, `/v1/responses` -> 404).
+- `/v1/models*` remains active and is guarded by OpenAI-compatible API-key validation.
+- Cancellation uses shared `request_id` across API handler, conversion stream bridge, and `OpenAIClient.active_requests`.
+- Streaming event order must remain Claude-compatible: `message_start` -> `ping` -> block events -> `message_delta` -> `message_stop`.
+- Token ceilings are clamped by config limits before upstream dispatch (`MIN_TOKENS_LIMIT`, `MAX_TOKENS_LIMIT`).
 
 ## LOCAL COMMANDS
 ```bash
@@ -39,15 +40,16 @@ mypy app/
 black app/
 isort app/
 ruff check app/
+clay
 ./start_proxy.sh
 ```
 
 ## GOTCHAS
-- `core/config.py` and `core/logging.py` execute import-time side effects; avoid moving imports casually.
-- `main.py` and `core/logging.py` each normalize log level; keep behavior aligned if touched.
-- `start_proxy.sh` is compatibility-only; prefer `clay` for stable packaging path.
-- `api/endpoints.py` is intentionally large and contract-heavy; keep bugfixes scoped and regression-tested.
+- `core/config.py` and `core/logging.py` run import-time side effects; moving imports can change startup behavior.
+- `main.py` and `core/logging.py` each normalize log levels; keep semantics aligned when changing either file.
+- `api/endpoints.py` is large and contract-heavy; keep bugfixes minimal and targeted.
+- Compatibility/extension flags affect conversion and metadata passthrough (for example `OPENAI_GPT5_SAMPLING_REASONING_COMPAT_MODE`).
 
 ## ESCALATION
-- Changing API response/error shapes requires updating `tests/test_main.py` and `tests/AGENTS.md`.
-- Changing startup/runtime command guidance requires updating root `AGENTS.md`.
+- API response/error-shape changes require synchronized updates to converters + `tests/test_main.py` expectations.
+- Startup/runtime command changes require updating root `AGENTS.md` command guidance.

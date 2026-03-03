@@ -1,33 +1,38 @@
 # CONVERSION KNOWLEDGE BASE
 
 ## OVERVIEW
-`conversion/` translates Claude request/response contracts to OpenAI Responses payloads and back, including SSE bridge semantics.
+`conversion/` is the protocol bridge between Claude contracts and OpenAI provider payloads/events, including deterministic request mapping and Claude SSE-compliant streaming reconstruction.
 
 ## WHERE TO LOOK
-- Request adaptation: `request_converter.py`.
-- Response + streaming adaptation: `response_converter.py`.
-- Tool result normalization: `parse_tool_result_content()`.
+- Claude -> OpenAI request conversion: `request_converter.py` (`convert_claude_to_openai`).
+- OpenAI -> Claude non-stream conversion: `response_converter.py` (`convert_openai_to_claude_response`).
+- OpenAI stream -> Claude SSE bridge: `convert_openai_streaming_to_claude_with_cancellation()`.
+- Tool-result normalization: `parse_tool_result_content()`.
 - Stop-reason mapping: `_map_finish_reason()` and `_map_responses_stop_reason()`.
 
 ## LOCAL CONTRACTS
-- Request conversion clamps token budgets using config min/max limits.
-- Requests map to OpenAI Responses payloads with `store` driven by `OPENAI_RESPONSES_STATE_MODE`.
-- Unsupported Claude fields (`stop_sequences`, `top_k`, `inference_geo`, `context_management`) raise conversion errors in Responses-only mode.
-- Native Claude `web_search` tool variants are rejected in Responses-only mode.
-- Tool-call identities must survive round-trip conversion (`tool_use` <-> function call IDs).
-- Streaming bridge emits Claude SSE sequence: `message_start`, `ping`, content events, `message_delta`, `message_stop`.
-- Tool-call argument deltas are reconstructed incrementally and buffered until tool block start.
-- Usage extraction tolerates provider shape variants (`prompt_tokens` vs `input_tokens`, `completion_tokens` vs `output_tokens`).
+- Request conversion clamps output token budgets with config min/max bounds.
+- Responses payload `store` flag is derived from `OPENAI_RESPONSES_STATE_MODE` (`provider` vs `stateless`).
+- Responses-only mode rejects unsupported Claude fields: `stop_sequences`, `top_k`, `inference_geo`.
+- Native Claude `web_search*` tool variants are rejected for Responses-only conversion.
+- Claude context edits are mapped to Responses `context_management` compaction entries.
+- Tool-call identity must survive round trip (`tool_use.id` <-> OpenAI `call_id`/`id`).
+- Streaming bridge accepts both Responses-style events and legacy chat chunk shapes.
+- Claude streaming sequence is strict: `message_start` -> `ping` -> content block events -> `message_delta` -> `message_stop`.
+- Tool-call JSON argument deltas are buffered/emitted incrementally and flushed when tool block starts/completes.
+- Usage extraction tolerates provider variants (`prompt_tokens`/`input_tokens`, `completion_tokens`/`output_tokens`) and cache/reasoning detail fields.
+- GPT-5 reasoning/sampling compatibility behavior is controlled by `OPENAI_GPT5_SAMPLING_REASONING_COMPAT_MODE` (drop/force/strict).
 
 ## CONVENTIONS
-- Keep conversion deterministic and side-effect free except for logging.
-- Preserve Unicode in JSON serialization (`ensure_ascii=False`) for content fidelity.
-- Prefer explicit mapping helpers over inline conditional rewrites.
+- Keep conversions deterministic and side-effect free except logging warnings for compatibility shims.
+- Preserve Unicode fidelity in serialized JSON (`ensure_ascii=False`).
+- Prefer dedicated helper mappers over inline branching across request/stream code paths.
 
 ## ANTI-PATTERNS
-- Do not emit OpenAI-native SSE events on Anthropic streaming routes.
-- Do not collapse multiple content block types into plain text when block semantics matter.
-- Do not change stop/finish-reason mapping without updating integration checks.
+- Do not emit OpenAI-native stream events on Anthropic streaming routes.
+- Do not flatten semantic block types (`thinking`, `tool_use`, `tool_result`) into plain text.
+- Do not alter stop-reason mapping semantics without synchronized integration-test updates.
+- Do not reorder Claude SSE lifecycle events; clients depend on ordering.
 
 ## VERIFICATION
 ```bash

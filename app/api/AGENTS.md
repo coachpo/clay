@@ -1,43 +1,41 @@
 # API KNOWLEDGE BASE
 
 ## OVERVIEW
-
-`endpoints.py` hosts Anthropic-compatible generation routes, OpenAI-compatible model discovery routes, and validation/cancellation glue.
+`endpoints.py` owns request contract enforcement, Anthropic generation lifecycle, OpenAI-compatible model discovery, and disconnect-aware cancellation glue.
 
 ## WHERE TO LOOK
-
-- Route entrypoints: `create_message`, `count_tokens`, `list_models_openai`, `get_model_openai`.
-- Validation gates: `validate_api_contract` and `validate_openai_api_contract`.
-- Version policy: `_resolve_requested_anthropic_version`.
-- Disconnect handling: `_create_response_with_disconnect_cancellation` and `_wait_for_http_disconnect`.
-- Error shaping: `_anthropic_error_response`, `_openai_error_response`, status-type mappers.
+- Main Anthropic path: `create_message()` (`POST /v1/messages`).
+- Token counting: `count_tokens()` (`POST /v1/messages/count_tokens`) + `_estimate_*` helpers.
+- OpenAI model discovery: `list_models_openai()` and `get_model_openai()` (`GET /v1/models*`).
+- Contract validators: `validate_api_contract()` and `validate_openai_api_contract()`.
+- Version handling: `_resolve_requested_anthropic_version()` + fallback helpers.
+- Disconnect cancellation: `_create_response_with_disconnect_cancellation()` + `_wait_for_http_disconnect()`.
+- Error payload shaping: `_anthropic_error_response()`, `_openai_error_response()`, status-to-type mappers.
 
 ## LOCAL CONTRACTS
-
-- Anthropic request size guard enforces 32 MB via `content-length` before body parsing.
-- Anthropic version acceptance is driven by config (`ANTHROPIC_SUPPORTED_VERSIONS`, default `2023-06-01`); missing header behavior is flag-controlled.
-- Non-JSON content types for Anthropic routes are rejected.
-- Response headers must include both `request-id` and `x-request-id` on success and errors.
-- Streaming `/v1/messages` delegates SSE conversion to `convert_openai_streaming_to_claude_with_cancellation`.
-- Non-stream `/v1/messages` path must keep disconnect-aware cancellation behavior.
-- Removed generation surfaces `POST /v1/chat/completions` and `POST /v1/responses` return 404 by design.
-- OpenAI-compatible auth guard applies to `/v1/models` and `/v1/models/{model_id}`.
+- Anthropic request-size guard enforces 32 MB by `content-length` before body parsing (`MAX_ANTHROPIC_REQUEST_BYTES`).
+- Anthropic header/version policy is config-driven (`ANTHROPIC_SUPPORTED_VERSIONS`, missing/fallback flags, default `2023-06-01`).
+- Anthropic routes reject non-JSON `content-type` values.
+- `request_id` is generated per request and returned in both `request-id` and `x-request-id` headers.
+- Streaming `/v1/messages` uses `convert_openai_streaming_to_claude_with_cancellation()` and must preserve Claude SSE order.
+- Non-stream `/v1/messages` path must retain disconnect-aware cancellation behavior (`499` on client disconnect).
+- Adaptive thinking is restricted to model prefixes in `ADAPTIVE_THINKING_MODEL_PREFIXES` (`claude-opus-4-6`, `claude-sonnet-4-6`).
+- OpenAI-compatible generation endpoints `/v1/chat/completions` and `/v1/responses` intentionally return 404.
+- OpenAI-compatible auth gate protects `/v1/models` and `/v1/models/{model_id}`.
+- Optional Anthropic compatibility metadata may be attached into provider payload `extra_body.proxy_metadata`.
 
 ## CONVENTIONS
-
-- Keep Anthropic and OpenAI error payload shapes distinct and status-appropriate.
-- Generate one `request_id` per request and thread it through transport/conversion/cancellation.
-- Prefer small targeted fixes in this file; many routes share helper behavior.
+- Keep Anthropic and OpenAI error envelopes distinct and status-mapped (`invalid_request_error`, `api_error`, etc.).
+- Keep `request_id` threading consistent across API, conversion, and client cancellation maps.
+- Keep bugfixes minimal in this file; helpers are shared by multiple routes and tests assert exact shapes.
 
 ## ANTI-PATTERNS
-
 - Do not bypass `Depends(validate_api_contract)` or `Depends(validate_openai_api_contract)` on protected routes.
-- Do not change SSE event ordering rules here without synchronized conversion/test updates.
-- Do not remove request-id headers from error paths.
-- Do not re-enable removed OpenAI generation endpoints without full contract and converter updates.
+- Do not change SSE ordering/event names without synchronized converter + integration test updates.
+- Do not remove request-id header parity from success or error responses.
+- Do not silently re-enable removed OpenAI generation surfaces without full contract/converter/test updates.
 
 ## VERIFICATION
-
 ```bash
 python tests/test_main.py
 ```

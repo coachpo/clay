@@ -1,34 +1,35 @@
 # MODELS KNOWLEDGE BASE
 
 ## OVERVIEW
-`models/` defines strict Claude schemas and permissive OpenAI compatibility models used for request validation.
+`models/` defines strict Claude schema contracts and permissive OpenAI compatibility request models used by API validation/conversion flows.
 
 ## WHERE TO LOOK
-- Claude contracts + validators: `claude.py`.
-- OpenAI compatibility model shapes: `openai.py`.
-- Role/content compatibility checks: `ClaudeMessage.validate_role_content()`.
-- Tool-choice/thinking constraints: `_ClaudeMessagesRequestFields.validate_tool_choice()`.
+- Claude request/content/tool/thinking schemas: `claude.py`.
+- OpenAI compatibility request schemas: `openai.py`.
+- Role/content compatibility: `ClaudeMessage.validate_role_content()`.
+- Tool-choice/thinking coupling: `_ClaudeMessagesRequestFields.validate_tool_choice()`.
+- Forward-compat parsing selectors: `parse_claude_messages_request()` and `parse_claude_token_count_request()`.
 
 ## LOCAL CONTRACTS
-- Claude models inherit `StrictBaseModel` (`extra="forbid"`) to reject unknown fields.
-- Forward-compat Claude variants use `ForwardCompatBaseModel` (`extra="allow"`) when enabled by config.
-- OpenAI models inherit `OpenAIBaseModel` (`extra="allow"`) for permissive compatibility shapes.
-- Claude message content uses discriminated unions by `type`; discriminator values must stay stable.
-- `tool_result` blocks are user-only; `tool_use`/thinking blocks are assistant-only.
-- `thinking.budget_tokens` is valid only when `thinking.type` is `enabled`.
-- `tool_choice` requires `tools` unless choice type is `none`.
-- Context edit order is constrained (`clear_thinking_20251015` must be first when combining edits).
-- OpenAI request token fields are positive integers when present.
+- Strict Claude models inherit `StrictBaseModel` (`extra="forbid"`) by default.
+- Forward-compat Claude variants inherit `ForwardCompatBaseModel` (`extra="allow"`) when enabled by config flags.
+- OpenAI compatibility models inherit `OpenAIBaseModel` (`extra="allow"`) and intentionally accept unknown fields.
+- Claude content unions are discriminated by `type`; discriminator literals are protocol-level contract surface.
+- Role enforcement: user blocks allow `text|image|document|tool_result`; assistant blocks allow `text|tool_use|thinking|redacted_thinking`.
+- `thinking.budget_tokens` is valid only when `thinking.type == "enabled"`.
+- `tool_choice` requires `tools` unless choice type is `none`; thinking only supports tool_choice `auto|none`.
+- Context edit ordering is constrained (`clear_thinking_20251015` must be first when combining edits).
+- Token-related numeric fields are bounded positive values where declared (for example `max_tokens`, `max_output_tokens`).
 
 ## CONVENTIONS
-- When adding a Claude content block type, update unions, validators, and converters together.
-- Keep model field defaults aligned with endpoint behavior and tests.
-- Prefer schema-level constraints over ad-hoc runtime checks when feasible.
+- When adding Claude block/tool variants, update schema unions, validators, request converter, response converter, and tests together.
+- Keep defaults and field constraints aligned with endpoint behavior and integration assertions.
+- Prefer schema-level validation over downstream ad-hoc runtime checks.
 
 ## ANTI-PATTERNS
-- Do not loosen Claude strictness (`extra="forbid"`) without explicit contract decision.
-- Do not add model-only fields without corresponding conversion/endpoint handling.
-- Do not assume OpenAI schema layer is unused; compatibility models are part of documented API surface.
+- Do not loosen strict Claude models (`extra="forbid"`) without explicit contract decision.
+- Do not add schema fields without corresponding API/conversion handling and regression tests.
+- Do not assume OpenAI compatibility schemas are dead code; they define public compatibility surface expectations.
 
 ## VERIFICATION
 ```bash
