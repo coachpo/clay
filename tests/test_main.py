@@ -749,6 +749,32 @@ async def test_messages_explicit_temperature_is_forwarded() -> None:
     assert stub_client.last_request.get("temperature") == 0.2, stub_client.last_request
 
 
+async def test_messages_explicit_temperature_scales_to_x2_when_enabled() -> None:
+    stub_client = _StubOpenAIClientForMessages()
+    original_client = api_endpoints.openai_client
+    original_scale_flag = config.anthropic_temperature_scale_to_openai_x2
+    api_endpoints.openai_client = stub_client
+    config.anthropic_temperature_scale_to_openai_x2 = True
+    try:
+        response = await _post_messages_in_process(
+            {
+                "model": "claude-opus-4-6",
+                "max_tokens": 64,
+                "temperature": 0.2,
+                "messages": [{"role": "user", "content": "Scaled temperature"}],
+                "thinking": {"type": "adaptive"},
+            }
+        )
+    finally:
+        config.anthropic_temperature_scale_to_openai_x2 = original_scale_flag
+        api_endpoints.openai_client = original_client
+
+    assert 200 <= response.status_code < 300, response.text
+    _assert_request_id_headers(response)
+    assert stub_client.last_request is not None
+    assert stub_client.last_request.get("temperature") == 0.4, stub_client.last_request
+
+
 async def test_messages_maps_max_effort_to_openai_xhigh() -> None:
     stub_client = _StubOpenAIClientForMessages()
     original_client = api_endpoints.openai_client
@@ -1672,6 +1698,9 @@ async def main() -> None:
 
     await test_messages_explicit_temperature_is_forwarded()
     print("- messages explicit temperature passthrough check passed")
+
+    await test_messages_explicit_temperature_scales_to_x2_when_enabled()
+    print("- messages explicit temperature x2 scaling check passed")
 
     await test_messages_maps_max_effort_to_openai_xhigh()
     print("- messages adaptive max effort maps to xhigh check passed")

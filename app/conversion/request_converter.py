@@ -79,7 +79,7 @@ def convert_claude_to_responses_request(
         responses_request["instructions"] = instructions
 
     if claude_request.temperature is not None:
-        responses_request["temperature"] = claude_request.temperature
+        responses_request["temperature"] = _map_temperature_for_openai(claude_request.temperature)
     if claude_request.top_p is not None:
         responses_request["top_p"] = claude_request.top_p
     if claude_request.metadata is not None:
@@ -504,6 +504,14 @@ def _map_output_effort_to_openai_reasoning_effort(effort: Optional[str]) -> Opti
     if effort in {"high", "max"}:
         return "xhigh"
     return None
+
+
+def _map_temperature_for_openai(anthropic_temperature: float) -> float:
+    # Keep direct passthrough by default for Anthropic compatibility.
+    # x2 mapping is opt-in for specific OpenAI-compatible upstreams that prefer 0..2 tuning.
+    if not config.anthropic_temperature_scale_to_openai_x2:
+        return anthropic_temperature
+    return anthropic_temperature * 2
 
 
 def _convert_context_management_for_responses(

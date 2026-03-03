@@ -61,6 +61,11 @@ class Config:
         self.anthropic_allow_unknown_fields = _env_flag(
             "ANTHROPIC_ALLOW_UNKNOWN_FIELDS", self.anthropic_compatibility_mode
         )
+        # Optional compatibility knob for providers that expect a wider temperature range.
+        # Default is disabled to preserve Anthropic client intent and avoid surprise randomness shifts.
+        self.anthropic_temperature_scale_to_openai_x2 = _env_flag(
+            "ANTHROPIC_TEMPERATURE_SCALE_TO_OPENAI_X2", False
+        )
         self.allow_openai_extension_passthrough = _env_flag(
             "ALLOW_OPENAI_EXTENSION_PASSTHROUGH", False
         )
