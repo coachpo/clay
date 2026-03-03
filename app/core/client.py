@@ -114,6 +114,24 @@ class OpenAIClient:
 
         return next_request, tuple(removed_fields), trigger_field
 
+    @staticmethod
+    def _remove_present_optional_fields(
+        request: Dict[str, Any],
+        fallback_fields: tuple[str, ...],
+    ) -> tuple[Dict[str, Any], tuple[str, ...]]:
+        next_request = dict(request)
+        removed_fields: list[str] = []
+        for field in fallback_fields:
+            if field in next_request:
+                next_request.pop(field, None)
+                removed_fields.append(field)
+        return next_request, tuple(removed_fields)
+
+    @staticmethod
+    def _is_retryable_server_status(error: APIError) -> bool:
+        status_code = getattr(error, "status_code", None)
+        return isinstance(status_code, int) and status_code in {500, 502, 503, 504}
+
     async def _create_with_metadata_fallback(self, request: Dict[str, Any]) -> Any:
         # Some OpenAI-compatible providers reject selected optional request fields.
         # Retry once without all known compatibility fields when any one is rejected.
@@ -135,6 +153,24 @@ class OpenAIClient:
                 "Upstream rejected optional field '%s' (%s); retrying /v1/responses without optional fields: %s.",
                 trigger_field,
                 type(error).__name__,
+                ", ".join(removed_fields),
+            )
+            return await self.client.responses.create(**retry_request)
+        except APIError as error:
+            # Some gateways return transient 5xx (e.g. 502) for optional fields like context_management.
+            # Retry once without optional compatibility fields before surfacing the upstream failure.
+            if not self._is_retryable_server_status(error):
+                raise
+
+            retry_request, removed_fields = self._remove_present_optional_fields(
+                retry_request, fallback_fields
+            )
+            if not removed_fields:
+                raise
+
+            logger.warning(
+                "Upstream returned %s; retrying /v1/responses without optional fields: %s.",
+                getattr(error, "status_code", "unknown"),
                 ", ".join(removed_fields),
             )
             return await self.client.responses.create(**retry_request)

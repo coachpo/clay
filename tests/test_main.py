@@ -13,7 +13,7 @@ from typing import Any, Dict, List, Optional
 import httpx
 from dotenv import load_dotenv
 from fastapi import HTTPException
-from openai._exceptions import BadRequestError
+from openai._exceptions import APIStatusError, BadRequestError
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
@@ -302,6 +302,16 @@ def _bad_request_error(message: str) -> BadRequestError:
     )
 
 
+def _api_status_error(message: str, status_code: int) -> APIStatusError:
+    request = httpx.Request("POST", "https://example.com/v1/responses")
+    response = httpx.Response(status_code=status_code, request=request)
+    return APIStatusError(
+        message=message,
+        response=response,
+        body={"error": {"message": message}},
+    )
+
+
 def test_openai_client_normalizes_root_base_url_to_v1() -> None:
     client = OpenAIClient(api_key="sk-test", base_url="https://api.duckcoding.ai")
     assert client.base_url == "https://api.duckcoding.ai/v1", client.base_url
@@ -470,6 +480,72 @@ async def test_does_not_retry_for_other_bad_request_errors() -> None:
         pass
     else:
         raise AssertionError("Expected BadRequestError for unrelated request validation errors")
+
+    assert len(calls) == 1
+
+
+async def test_retries_without_context_management_on_retryable_server_error() -> None:
+    client = OpenAIClient(api_key="sk-test", base_url="https://example.com")
+    calls: List[Dict[str, Any]] = []
+    sentinel = object()
+    upstream_502_error = _api_status_error("Bad gateway", status_code=502)
+
+    async def fake_create(**kwargs: Any) -> Any:
+        calls.append(dict(kwargs))
+        if len(calls) == 1:
+            raise upstream_502_error
+        return sentinel
+
+    client.client = SimpleNamespace(responses=SimpleNamespace(create=fake_create))
+
+    request = {
+        "model": "gpt-4.1",
+        "input": [
+            {
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_text", "text": "hello"}],
+            }
+        ],
+        "context_management": [{"type": "compaction", "compact_threshold": 200000}],
+    }
+
+    result = await client._create_with_metadata_fallback(request)
+    assert result is sentinel
+    assert len(calls) == 2
+    assert "context_management" in calls[0]
+    assert "context_management" not in calls[1]
+
+
+async def test_does_not_retry_for_non_retryable_api_status_error() -> None:
+    client = OpenAIClient(api_key="sk-test", base_url="https://example.com")
+    calls: List[Dict[str, Any]] = []
+    upstream_429_error = _api_status_error("Too many requests", status_code=429)
+
+    async def fake_create(**kwargs: Any) -> Any:
+        calls.append(dict(kwargs))
+        raise upstream_429_error
+
+    client.client = SimpleNamespace(responses=SimpleNamespace(create=fake_create))
+
+    request = {
+        "model": "gpt-4.1",
+        "input": [
+            {
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_text", "text": "hello"}],
+            }
+        ],
+        "context_management": [{"type": "compaction", "compact_threshold": 200000}],
+    }
+
+    try:
+        await client._create_with_metadata_fallback(request)
+    except APIStatusError:
+        pass
+    else:
+        raise AssertionError("Expected APIStatusError(429) to bypass optional-field fallback")
 
     assert len(calls) == 1
 
@@ -1775,6 +1851,12 @@ async def main() -> None:
 
     await test_does_not_retry_for_other_bad_request_errors()
     print("- metadata fallback does not retry unrelated bad requests check passed")
+
+    await test_retries_without_context_management_on_retryable_server_error()
+    print("- metadata fallback retries on retryable server errors with context_management check passed")
+
+    await test_does_not_retry_for_non_retryable_api_status_error()
+    print("- metadata fallback does not retry non-retryable API status errors check passed")
 
     await test_lightweight_client_cancellation_for_non_stream_response()
     print("- lightweight non-stream cancellation check passed")
