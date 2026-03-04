@@ -187,7 +187,6 @@ class OpenAIClient:
     def _build_upstream_protocol_error(self, error: APIError) -> HTTPException:
         raw_status_code = getattr(error, "status_code", None)
         status_code = self._normalize_error_status_code(raw_status_code)
-
         response = getattr(error, "response", None)
         content_type = ""
         cf_mitigated = ""
@@ -229,6 +228,86 @@ class OpenAIClient:
 
         return HTTPException(status_code=status_code, detail=message)
 
+    @staticmethod
+    def _is_likely_json_parse_error(detail: str) -> bool:
+        lowered = detail.lower()
+        markers = (
+            "expecting value",
+            "invalid character",
+            "bad_response_body",
+            "beginning of value",
+            "response body is not valid json",
+            "error parsing response body",
+            "failed to parse response body",
+            "unable to decode response body",
+        )
+        return any(marker in lowered for marker in markers)
+
+    @staticmethod
+    def _extract_api_error_block(error: APIError) -> Dict[str, Any]:
+        body = getattr(error, "body", None)
+        if not isinstance(body, dict):
+            return {}
+        error_block = body.get("error")
+        if isinstance(error_block, dict):
+            return error_block
+        return {}
+
+    def _is_protocol_error_api_error(self, error: APIError) -> bool:
+        raw_status_code = getattr(error, "status_code", None)
+        if isinstance(error, APIResponseValidationError) or not (
+            isinstance(raw_status_code, int) and raw_status_code >= 400
+        ):
+            return True
+
+        response = getattr(error, "response", None)
+        if response is not None:
+            try:
+                content_type = str(response.headers.get("content-type", ""))
+            except Exception:
+                content_type = ""
+            if content_type and not self._content_type_is_json(content_type):
+                return True
+
+        error_block = self._extract_api_error_block(error)
+        error_code = str(error_block.get("code", "")).lower()
+        error_type = str(error_block.get("type", "")).lower()
+        error_message = str(error_block.get("message", "")).lower()
+        protocol_codes = {
+            "bad_response_body",
+            "invalid_json",
+            "json_parse_error",
+            "response_validation_error",
+        }
+        if error_code in protocol_codes or error_type in protocol_codes:
+            return True
+        if error_message and self._is_likely_json_parse_error(error_message):
+            return True
+
+        body_preview = self._safe_payload_preview(getattr(error, "body", None))
+        if body_preview and self._looks_like_html_error_payload(body_preview):
+            return True
+
+        return self._is_likely_json_parse_error(str(error))
+
+    def _build_protocol_error_from_exception(self, error: Exception) -> HTTPException:
+        detail_preview = self._safe_payload_preview(str(error), max_chars=160)
+        message = "Upstream protocol error: expected JSON API response payload"
+        if detail_preview:
+            message = f"{message}. Parse failure: {detail_preview}"
+        else:
+            message = f"{message}."
+        return HTTPException(status_code=502, detail=message)
+
+    def _is_protocol_error_exception(self, error: Exception) -> bool:
+        if isinstance(error, json.JSONDecodeError):
+            return True
+
+        if isinstance(error, ValueError) and self._is_likely_json_parse_error(str(error)):
+            return True
+
+        return False
+
     async def _create_with_metadata_fallback(self, request: Dict[str, Any]) -> Any:
         # Some OpenAI-compatible providers reject selected optional request fields.
         # Retry once without all known compatibility fields when any one is rejected.
@@ -258,20 +337,56 @@ class OpenAIClient:
         except APIError as error:
             # Some gateways return transient 5xx (e.g. 502) for optional fields like context_management.
             # Retry once without optional compatibility fields before surfacing the upstream failure.
-            if not self._is_retryable_server_status(error):
+            if self._is_retryable_server_status(error):
+                retry_request, removed_fields = self._remove_present_optional_fields(
+                    retry_request, fallback_fields
+                )
+                if not removed_fields:
+                    raise
+
+                logger.warning(
+                    "Upstream returned %s; retrying /v1/responses without optional fields: %s.",
+                    getattr(error, "status_code", "unknown"),
+                    ", ".join(removed_fields),
+                )
+                return await self.client.responses.create(**retry_request)
+
+            if self._is_protocol_error_api_error(error):
+                retry_request, removed_fields = self._remove_present_optional_fields(
+                    retry_request, fallback_fields
+                )
+                if removed_fields:
+                    logger.warning(
+                        "Upstream protocol parse error (%s); retrying /v1/responses without optional fields: %s.",
+                        type(error).__name__,
+                        ", ".join(removed_fields),
+                    )
+                else:
+                    logger.warning(
+                        "Upstream protocol parse error (%s); retrying /v1/responses once.",
+                        type(error).__name__,
+                    )
+                return await self.client.responses.create(**retry_request)
+
+            raise
+        except (json.JSONDecodeError, ValueError) as error:
+            if not self._is_likely_json_parse_error(str(error)):
                 raise
 
             retry_request, removed_fields = self._remove_present_optional_fields(
                 retry_request, fallback_fields
             )
-            if not removed_fields:
-                raise
-
-            logger.warning(
-                "Upstream returned %s; retrying /v1/responses without optional fields: %s.",
-                getattr(error, "status_code", "unknown"),
-                ", ".join(removed_fields),
-            )
+            if removed_fields:
+                logger.warning(
+                    "Upstream JSON parse failure (%s); retrying /v1/responses without optional fields: %s.",
+                    type(error).__name__,
+                    ", ".join(removed_fields),
+                )
+            else:
+                logger.warning(
+                    "Upstream JSON parse failure (%s); retrying /v1/responses once.",
+                    type(error).__name__,
+                )
             return await self.client.responses.create(**retry_request)
 
     async def create_response(
@@ -332,17 +447,17 @@ class OpenAIClient:
                 detail=self.classify_openai_error(str(error)),
             ) from error
         except APIError as error:
-            raw_status_code = getattr(error, "status_code", None)
-            if isinstance(error, APIResponseValidationError) or not (
-                isinstance(raw_status_code, int) and raw_status_code >= 400
-            ):
+            if self._is_protocol_error_api_error(error):
                 raise self._build_upstream_protocol_error(error) from error
 
+            raw_status_code = getattr(error, "status_code", None)
             raise HTTPException(
                 status_code=self._normalize_error_status_code(raw_status_code),
                 detail=self.classify_openai_error(str(error)),
             ) from error
         except Exception as error:
+            if self._is_protocol_error_exception(error):
+                raise self._build_protocol_error_from_exception(error) from error
             raise HTTPException(
                 status_code=500,
                 detail=f"Unexpected error: {error}",
@@ -394,17 +509,17 @@ class OpenAIClient:
                 detail=self.classify_openai_error(str(error)),
             ) from error
         except APIError as error:
-            raw_status_code = getattr(error, "status_code", None)
-            if isinstance(error, APIResponseValidationError) or not (
-                isinstance(raw_status_code, int) and raw_status_code >= 400
-            ):
+            if self._is_protocol_error_api_error(error):
                 raise self._build_upstream_protocol_error(error) from error
 
+            raw_status_code = getattr(error, "status_code", None)
             raise HTTPException(
                 status_code=self._normalize_error_status_code(raw_status_code),
                 detail=self.classify_openai_error(str(error)),
             ) from error
         except Exception as error:
+            if self._is_protocol_error_exception(error):
+                raise self._build_protocol_error_from_exception(error) from error
             raise HTTPException(
                 status_code=500,
                 detail=f"Unexpected error: {error}",

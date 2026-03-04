@@ -302,13 +302,23 @@ def _bad_request_error(message: str) -> BadRequestError:
     )
 
 
-def _api_status_error(message: str, status_code: int) -> APIStatusError:
+def _api_status_error(
+    message: str,
+    status_code: int,
+    *,
+    body: Optional[Dict[str, Any]] = None,
+    headers: Optional[Dict[str, str]] = None,
+) -> APIStatusError:
     request = httpx.Request("POST", "https://example.com/v1/responses")
-    response = httpx.Response(status_code=status_code, request=request)
+    response = httpx.Response(
+        status_code=status_code,
+        request=request,
+        headers=headers or {"content-type": "application/json"},
+    )
     return APIStatusError(
         message=message,
         response=response,
-        body={"error": {"message": message}},
+        body=body or {"error": {"message": message}},
     )
 
 
@@ -662,6 +672,90 @@ async def test_retries_without_extra_body_on_retryable_server_error() -> None:
     assert "extra_body" not in calls[1]
 
 
+async def test_retries_without_optional_fields_on_protocol_api_error() -> None:
+    client = OpenAIClient(api_key="sk-test", base_url="https://example.com")
+    calls: List[Dict[str, Any]] = []
+    sentinel = object()
+    protocol_error = _api_status_error(
+        "bad response body",
+        status_code=500,
+        body={
+            "error": {
+                "message": "invalid character 'e' looking for beginning of value",
+                "type": "bad_response_body",
+                "code": "bad_response_body",
+            }
+        },
+    )
+
+    async def fake_create(**kwargs: Any) -> Any:
+        calls.append(dict(kwargs))
+        if len(calls) == 1:
+            raise protocol_error
+        return sentinel
+
+    client.client = SimpleNamespace(responses=SimpleNamespace(create=fake_create))
+    request = {
+        "model": "gpt-4.1",
+        "input": [
+            {
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_text", "text": "hello"}],
+            }
+        ],
+        "metadata": {"user_id": "test-user"},
+        "context_management": [{"type": "compaction", "compact_threshold": 200000}],
+        "extra_body": {
+            "proxy_metadata": {"anthropic_extensions": {"thinking": {"type": "adaptive"}}}
+        },
+    }
+
+    result = await client._create_with_metadata_fallback(request)
+    assert result is sentinel
+    assert len(calls) == 2
+    assert "metadata" in calls[0]
+    assert "context_management" in calls[0]
+    assert "extra_body" in calls[0]
+    assert "metadata" not in calls[1]
+    assert "context_management" not in calls[1]
+    assert "extra_body" not in calls[1]
+
+
+async def test_retries_once_on_json_decode_protocol_error_without_optional_fields() -> None:
+    client = OpenAIClient(api_key="sk-test", base_url="https://example.com")
+    calls: List[Dict[str, Any]] = []
+    sentinel = object()
+
+    async def fake_create(**kwargs: Any) -> Any:
+        calls.append(dict(kwargs))
+        if len(calls) == 1:
+            raise json.JSONDecodeError("Expecting value", "e", 0)
+        return sentinel
+
+    client.client = SimpleNamespace(responses=SimpleNamespace(create=fake_create))
+    request = {
+        "model": "gpt-4.1",
+        "input": [
+            {
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_text", "text": "hello"}],
+            }
+        ],
+        "metadata": {"user_id": "test-user"},
+        "context_management": [{"type": "compaction", "compact_threshold": 200000}],
+    }
+
+    result = await client._create_with_metadata_fallback(request)
+    assert result is sentinel
+    assert len(calls) == 2
+    assert "metadata" in calls[0]
+    assert "context_management" in calls[0]
+    assert "metadata" not in calls[1]
+    assert "context_management" not in calls[1]
+
+
 def test_retryable_server_status_includes_cloudflare_and_529() -> None:
     for status in [500, 502, 503, 504, 520, 521, 522, 523, 524, 525, 526, 527, 529]:
         error = _api_status_error("retryable", status)
@@ -810,6 +904,104 @@ async def test_create_response_stream_maps_protocol_validation_error_to_http_502
         assert "Upstream protocol error" in str(error.detail), error
     else:
         raise AssertionError("Expected HTTPException(502) for streaming protocol validation error")
+
+
+async def test_create_response_maps_json_decode_error_to_http_502() -> None:
+    client = OpenAIClient(api_key="sk-test", base_url="https://example.com")
+
+    async def fake_create(**_: Any) -> Any:
+        raise json.JSONDecodeError("Expecting value", "e", 0)
+
+    client.client = SimpleNamespace(responses=SimpleNamespace(create=fake_create))
+    request = {
+        "model": "gpt-5.2",
+        "input": [
+            {
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_text", "text": "hello"}],
+            }
+        ],
+    }
+
+    try:
+        await client.create_response(request)
+    except HTTPException as error:
+        assert error.status_code == 502, error
+        assert "Upstream protocol error" in str(error.detail), error
+        assert "Parse failure" in str(error.detail), error
+    else:
+        raise AssertionError("Expected HTTPException(502) for JSON decode protocol error")
+
+
+async def test_create_response_stream_maps_json_decode_error_to_http_502() -> None:
+    client = OpenAIClient(api_key="sk-test", base_url="https://example.com")
+
+    async def fake_create(**_: Any) -> Any:
+        raise json.JSONDecodeError("Expecting value", "e", 0)
+
+    client.client = SimpleNamespace(responses=SimpleNamespace(create=fake_create))
+    request = {
+        "model": "gpt-5.2",
+        "input": [
+            {
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_text", "text": "hello"}],
+            }
+        ],
+        "stream": True,
+    }
+
+    stream = client.create_response_stream(request)
+    try:
+        await anext(stream)
+    except HTTPException as error:
+        assert error.status_code == 502, error
+        assert "Upstream protocol error" in str(error.detail), error
+        assert "Parse failure" in str(error.detail), error
+    else:
+        raise AssertionError("Expected HTTPException(502) for stream JSON decode protocol error")
+
+
+async def test_create_response_maps_bad_response_body_api_error_to_protocol_error() -> None:
+    client = OpenAIClient(api_key="sk-test", base_url="https://example.com")
+    protocol_error = _api_status_error(
+        "bad response body",
+        status_code=500,
+        body={
+            "error": {
+                "message": "invalid character 'e' looking for beginning of value",
+                "type": "bad_response_body",
+                "code": "bad_response_body",
+            }
+        },
+    )
+
+    async def fake_create(**_: Any) -> Any:
+        raise protocol_error
+
+    client.client = SimpleNamespace(responses=SimpleNamespace(create=fake_create))
+    request = {
+        "model": "gpt-5.2",
+        "input": [
+            {
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_text", "text": "hello"}],
+            }
+        ],
+    }
+
+    try:
+        await client.create_response(request)
+    except HTTPException as error:
+        assert error.status_code == 500, error
+        assert "Upstream protocol error" in str(error.detail), error
+    else:
+        raise AssertionError(
+            "Expected protocol-style HTTPException for bad_response_body API error"
+        )
 
 
 async def test_does_not_retry_for_non_retryable_api_status_error() -> None:
@@ -2189,6 +2381,24 @@ async def main() -> None:
 
     await test_create_response_stream_maps_protocol_validation_error_to_http_502()
     print("- stream protocol validation error maps to HTTP 502 check passed")
+
+    await test_create_response_maps_json_decode_error_to_http_502()
+    print("- non-stream JSON decode protocol error maps to HTTP 502 check passed")
+
+    await test_create_response_stream_maps_json_decode_error_to_http_502()
+    print("- stream JSON decode protocol error maps to HTTP 502 check passed")
+
+    await test_create_response_maps_bad_response_body_api_error_to_protocol_error()
+    print("- non-stream bad_response_body API error maps to protocol error check passed")
+    await test_retries_without_optional_fields_on_protocol_api_error()
+    print(
+        "- metadata fallback retries on protocol API error and strips optional fields check passed"
+    )
+
+    await test_retries_once_on_json_decode_protocol_error_without_optional_fields()
+    print(
+        "- metadata fallback retries once on JSON parse failure and strips optional fields check passed"
+    )
 
     await test_does_not_retry_for_non_retryable_api_status_error()
     print("- metadata fallback does not retry non-retryable API status errors check passed")
