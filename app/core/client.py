@@ -7,8 +7,10 @@ from urllib.parse import urlsplit, urlunsplit
 from fastapi import HTTPException
 from openai import AsyncAzureOpenAI, AsyncOpenAI
 from openai._exceptions import (
+    APIConnectionError,
     APIError,
     APIResponseValidationError,
+    APITimeoutError,
     AuthenticationError,
     BadRequestError,
     RateLimitError,
@@ -254,12 +256,14 @@ class OpenAIClient:
         return {}
 
     def _is_protocol_error_api_error(self, error: APIError) -> bool:
+        if isinstance(error, (APIConnectionError, APITimeoutError)):
+            return False
+
         raw_status_code = getattr(error, "status_code", None)
         if isinstance(error, APIResponseValidationError) or not (
             isinstance(raw_status_code, int) and raw_status_code >= 400
         ):
             return True
-
         response = getattr(error, "response", None)
         if response is not None:
             try:

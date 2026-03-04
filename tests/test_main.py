@@ -13,7 +13,13 @@ from typing import Any, Dict, List, Optional
 import httpx
 from dotenv import load_dotenv
 from fastapi import HTTPException
-from openai._exceptions import APIResponseValidationError, APIStatusError, BadRequestError
+from openai._exceptions import (
+    APIConnectionError,
+    APIResponseValidationError,
+    APIStatusError,
+    APITimeoutError,
+    BadRequestError,
+)
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
@@ -348,6 +354,17 @@ def _api_response_validation_error(
 
     response = httpx.Response(**response_kwargs)
     return APIResponseValidationError(response=response, body=body, message=message)
+
+
+def test_protocol_error_classification_excludes_transport_failures() -> None:
+    client = OpenAIClient(api_key="sk-test", base_url="https://example.com")
+    request = httpx.Request("POST", "https://example.com/v1/responses")
+
+    connection_error = APIConnectionError(request=request)
+    timeout_error = APITimeoutError(request=request)
+
+    assert client._is_protocol_error_api_error(connection_error) is False
+    assert client._is_protocol_error_api_error(timeout_error) is False
 
 
 def test_openai_client_normalizes_root_base_url_to_v1() -> None:
@@ -2361,6 +2378,8 @@ async def main() -> None:
     test_normalize_error_status_code_maps_non_error_to_502()
     print("- status-code normalization for protocol errors check passed")
 
+    test_protocol_error_classification_excludes_transport_failures()
+    print("- protocol error classification excludes transport failures check passed")
     test_content_type_json_detection()
     print("- content-type JSON detection check passed")
 
