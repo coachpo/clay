@@ -13,7 +13,7 @@ from typing import Any, Dict, List, Optional
 import httpx
 from dotenv import load_dotenv
 from fastapi import HTTPException
-from openai._exceptions import APIStatusError, BadRequestError
+from openai._exceptions import APIResponseValidationError, APIStatusError, BadRequestError
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
@@ -310,6 +310,34 @@ def _api_status_error(message: str, status_code: int) -> APIStatusError:
         response=response,
         body={"error": {"message": message}},
     )
+
+
+def _api_response_validation_error(
+    message: str,
+    *,
+    status_code: int = 200,
+    content_type: str = "text/html; charset=utf-8",
+    body: Any = None,
+    headers: Optional[Dict[str, str]] = None,
+    text: Optional[str] = None,
+    url: str = "https://example.com/v1/responses",
+) -> APIResponseValidationError:
+    request = httpx.Request("POST", url)
+    response_kwargs: Dict[str, Any] = {
+        "status_code": status_code,
+        "request": request,
+        "headers": headers or {"content-type": content_type},
+    }
+
+    if text is not None:
+        response_kwargs["text"] = text
+    elif body is not None and not isinstance(body, (dict, list)):
+        response_kwargs["text"] = str(body)
+    elif body is None:
+        response_kwargs["text"] = ""
+
+    response = httpx.Response(**response_kwargs)
+    return APIResponseValidationError(response=response, body=body, message=message)
 
 
 def test_openai_client_normalizes_root_base_url_to_v1() -> None:
@@ -642,6 +670,146 @@ def test_retryable_server_status_includes_cloudflare_and_529() -> None:
     for status in [400, 401, 403, 404, 408, 409, 422, 429]:
         error = _api_status_error("not-retryable", status)
         assert OpenAIClient._is_retryable_server_status(error) is False
+
+
+def test_normalize_error_status_code_maps_non_error_to_502() -> None:
+    assert OpenAIClient._normalize_error_status_code(200) == 502
+    assert OpenAIClient._normalize_error_status_code(399) == 502
+    assert OpenAIClient._normalize_error_status_code(None) == 502
+    assert OpenAIClient._normalize_error_status_code(429) == 429
+
+
+def test_content_type_json_detection() -> None:
+    assert OpenAIClient._content_type_is_json("application/json") is True
+    assert OpenAIClient._content_type_is_json("application/json; charset=utf-8") is True
+    assert OpenAIClient._content_type_is_json("application/problem+json") is True
+    assert OpenAIClient._content_type_is_json("text/html") is False
+    assert OpenAIClient._content_type_is_json("text/event-stream") is False
+
+
+def test_html_error_payload_signature_detection() -> None:
+    assert (
+        OpenAIClient._looks_like_html_error_payload("<!doctype html><html>challenge</html>") is True
+    )
+    assert OpenAIClient._looks_like_html_error_payload("Cloudflare Ray ID: 12345") is True
+    assert OpenAIClient._looks_like_html_error_payload("Error 1020 Access denied") is True
+    assert OpenAIClient._looks_like_html_error_payload('{"ok": true}') is False
+
+
+def test_safe_payload_preview_normalizes_and_clips() -> None:
+    preview = OpenAIClient._safe_payload_preview(" line1\nline2\tline3 ", max_chars=10)
+    assert preview == "line1 line"
+    dict_preview = OpenAIClient._safe_payload_preview({"a": "b"})
+    assert '"a": "b"' in dict_preview
+
+
+def test_build_upstream_protocol_error_uses_status_502_for_fake_200() -> None:
+    client = OpenAIClient(api_key="sk-test", base_url="https://example.com")
+    error = _api_response_validation_error(
+        "Response payload is not valid JSON",
+        status_code=200,
+        content_type="text/html; charset=utf-8",
+        body="<!doctype html><html><title>502 Bad Gateway</title></html>",
+        headers={
+            "content-type": "text/html; charset=utf-8",
+            "cf-mitigated": "challenge",
+            "cf-ray": "abcd1234",
+        },
+    )
+
+    http_error = client._build_upstream_protocol_error(error)
+    assert isinstance(http_error, HTTPException)
+    assert http_error.status_code == 502
+    detail = str(http_error.detail)
+    assert "Upstream protocol error" in detail
+    assert "unexpected content-type" in detail
+    assert "cf-mitigated=challenge" in detail
+    assert "cf-ray=abcd1234" in detail
+    assert "Body preview" in detail
+
+
+def test_build_upstream_protocol_error_keeps_upstream_error_status() -> None:
+    client = OpenAIClient(api_key="sk-test", base_url="https://example.com")
+    error = _api_response_validation_error(
+        "Response schema mismatch",
+        status_code=503,
+        content_type="application/json",
+        body={"error": "upstream unavailable"},
+    )
+
+    http_error = client._build_upstream_protocol_error(error)
+    assert isinstance(http_error, HTTPException)
+    assert http_error.status_code == 503
+    assert "Upstream protocol error" in str(http_error.detail)
+
+
+async def test_create_response_maps_protocol_validation_error_to_http_502() -> None:
+    client = OpenAIClient(api_key="sk-test", base_url="https://example.com")
+    protocol_error = _api_response_validation_error(
+        "Invalid JSON response from upstream",
+        status_code=200,
+        content_type="text/html",
+        body="<!doctype html><html>Bad gateway</html>",
+    )
+
+    async def fake_create(**_: Any) -> Any:
+        raise protocol_error
+
+    client.client = SimpleNamespace(responses=SimpleNamespace(create=fake_create))
+    request = {
+        "model": "gpt-5.2",
+        "input": [
+            {
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_text", "text": "hello"}],
+            }
+        ],
+    }
+
+    try:
+        await client.create_response(request)
+    except HTTPException as error:
+        assert error.status_code == 502, error
+        assert "Upstream protocol error" in str(error.detail), error
+    else:
+        raise AssertionError("Expected HTTPException(502) for protocol validation error")
+
+
+async def test_create_response_stream_maps_protocol_validation_error_to_http_502() -> None:
+    client = OpenAIClient(api_key="sk-test", base_url="https://example.com")
+    protocol_error = _api_response_validation_error(
+        "Invalid stream envelope",
+        status_code=200,
+        content_type="text/html",
+        body="<!doctype html><html>challenge</html>",
+        headers={"content-type": "text/html", "cf-mitigated": "challenge"},
+    )
+
+    async def fake_create(**_: Any) -> Any:
+        raise protocol_error
+
+    client.client = SimpleNamespace(responses=SimpleNamespace(create=fake_create))
+    request = {
+        "model": "gpt-5.2",
+        "input": [
+            {
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_text", "text": "hello"}],
+            }
+        ],
+        "stream": True,
+    }
+
+    stream = client.create_response_stream(request)
+    try:
+        await anext(stream)
+    except HTTPException as error:
+        assert error.status_code == 502, error
+        assert "Upstream protocol error" in str(error.detail), error
+    else:
+        raise AssertionError("Expected HTTPException(502) for streaming protocol validation error")
 
 
 async def test_does_not_retry_for_non_retryable_api_status_error() -> None:
@@ -1997,6 +2165,30 @@ async def main() -> None:
 
     test_retryable_server_status_includes_cloudflare_and_529()
     print("- retryable server status set includes cloudflare 52x and 529 check passed")
+
+    test_normalize_error_status_code_maps_non_error_to_502()
+    print("- status-code normalization for protocol errors check passed")
+
+    test_content_type_json_detection()
+    print("- content-type JSON detection check passed")
+
+    test_html_error_payload_signature_detection()
+    print("- HTML error payload signature detection check passed")
+
+    test_safe_payload_preview_normalizes_and_clips()
+    print("- payload preview normalization/clipping check passed")
+
+    test_build_upstream_protocol_error_uses_status_502_for_fake_200()
+    print("- upstream protocol error mapping converts fake 200 to 502 check passed")
+
+    test_build_upstream_protocol_error_keeps_upstream_error_status()
+    print("- upstream protocol error mapping keeps valid upstream status check passed")
+
+    await test_create_response_maps_protocol_validation_error_to_http_502()
+    print("- non-stream protocol validation error maps to HTTP 502 check passed")
+
+    await test_create_response_stream_maps_protocol_validation_error_to_http_502()
+    print("- stream protocol validation error maps to HTTP 502 check passed")
 
     await test_does_not_retry_for_non_retryable_api_status_error()
     print("- metadata fallback does not retry non-retryable API status errors check passed")

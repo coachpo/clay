@@ -1,4 +1,5 @@
 import asyncio
+import json
 import logging
 from typing import Any, AsyncGenerator, Dict, Optional
 from urllib.parse import urlsplit, urlunsplit
@@ -7,6 +8,7 @@ from fastapi import HTTPException
 from openai import AsyncAzureOpenAI, AsyncOpenAI
 from openai._exceptions import (
     APIError,
+    APIResponseValidationError,
     AuthenticationError,
     BadRequestError,
     RateLimitError,
@@ -143,6 +145,90 @@ class OpenAIClient:
             529,
         }
 
+    @staticmethod
+    def _normalize_error_status_code(status_code: Any) -> int:
+        if isinstance(status_code, int) and status_code >= 400:
+            return status_code
+        return 502
+
+    @staticmethod
+    def _content_type_is_json(content_type: str) -> bool:
+        media_type = content_type.split(";", 1)[0].strip().lower()
+        return media_type == "application/json" or media_type.endswith("+json")
+
+    @staticmethod
+    def _looks_like_html_error_payload(payload_preview: str) -> bool:
+        lowered = payload_preview.lower()
+        markers = (
+            "<!doctype html",
+            "<html",
+            "cloudflare",
+            "cf-error",
+            "error 1020",
+            "ray id",
+            "bad gateway",
+            "access denied",
+        )
+        return any(marker in lowered for marker in markers)
+
+    @staticmethod
+    def _safe_payload_preview(payload: Any, max_chars: int = 240) -> str:
+        if payload is None:
+            return ""
+
+        if isinstance(payload, (dict, list)):
+            raw = json.dumps(payload, ensure_ascii=False)
+        else:
+            raw = str(payload)
+
+        normalized = " ".join(raw.split())
+        return normalized[:max_chars]
+
+    def _build_upstream_protocol_error(self, error: APIError) -> HTTPException:
+        raw_status_code = getattr(error, "status_code", None)
+        status_code = self._normalize_error_status_code(raw_status_code)
+
+        response = getattr(error, "response", None)
+        content_type = ""
+        cf_mitigated = ""
+        cf_ray = ""
+
+        body_preview = self._safe_payload_preview(getattr(error, "body", None))
+        if response is not None:
+            try:
+                content_type = str(response.headers.get("content-type", ""))
+                cf_mitigated = str(response.headers.get("cf-mitigated", ""))
+                cf_ray = str(response.headers.get("cf-ray", ""))
+            except Exception:
+                content_type = ""
+                cf_mitigated = ""
+                cf_ray = ""
+
+            if not body_preview:
+                try:
+                    body_preview = self._safe_payload_preview(response.text)
+                except Exception:
+                    body_preview = ""
+
+        hints: list[str] = []
+        if content_type and not self._content_type_is_json(content_type):
+            hints.append(f"unexpected content-type '{content_type}'")
+        if cf_mitigated:
+            hints.append(f"cf-mitigated={cf_mitigated}")
+        if cf_ray:
+            hints.append(f"cf-ray={cf_ray}")
+        if body_preview and self._looks_like_html_error_payload(body_preview):
+            hints.append("html error payload signature")
+
+        hint_suffix = f" ({', '.join(hints)})" if hints else ""
+        message = "Upstream protocol error: expected JSON API response payload"
+        if body_preview:
+            message = f"{message}{hint_suffix}. Body preview: {body_preview}"
+        else:
+            message = f"{message}{hint_suffix}."
+
+        return HTTPException(status_code=status_code, detail=message)
+
     async def _create_with_metadata_fallback(self, request: Dict[str, Any]) -> Any:
         # Some OpenAI-compatible providers reject selected optional request fields.
         # Retry once without all known compatibility fields when any one is rejected.
@@ -246,9 +332,14 @@ class OpenAIClient:
                 detail=self.classify_openai_error(str(error)),
             ) from error
         except APIError as error:
-            status_code = getattr(error, "status_code", 500)
+            raw_status_code = getattr(error, "status_code", None)
+            if isinstance(error, APIResponseValidationError) or not (
+                isinstance(raw_status_code, int) and raw_status_code >= 400
+            ):
+                raise self._build_upstream_protocol_error(error) from error
+
             raise HTTPException(
-                status_code=status_code,
+                status_code=self._normalize_error_status_code(raw_status_code),
                 detail=self.classify_openai_error(str(error)),
             ) from error
         except Exception as error:
@@ -303,9 +394,14 @@ class OpenAIClient:
                 detail=self.classify_openai_error(str(error)),
             ) from error
         except APIError as error:
-            status_code = getattr(error, "status_code", 500)
+            raw_status_code = getattr(error, "status_code", None)
+            if isinstance(error, APIResponseValidationError) or not (
+                isinstance(raw_status_code, int) and raw_status_code >= 400
+            ):
+                raise self._build_upstream_protocol_error(error) from error
+
             raise HTTPException(
-                status_code=status_code,
+                status_code=self._normalize_error_status_code(raw_status_code),
                 detail=self.classify_openai_error(str(error)),
             ) from error
         except Exception as error:
