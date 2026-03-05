@@ -2,7 +2,7 @@ name: Cleanup
 
 on:
   schedule:
-    - cron: "0 3 * * 0"
+    - cron: "0 3 * * *"
   workflow_dispatch:
 
 concurrency:
@@ -15,13 +15,27 @@ permissions:
   packages: write
 
 jobs:
-  cleanup-workflow-runs:
+  cleanup-ci-workflow-runs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - name: Delete stale workflow runs
+      - name: Delete stale CI workflow runs (config.py-related runs)
         uses: Mattraks/delete-workflow-runs@v2.0.6
         with:
+          delete_workflow_pattern: ci.yml
+          retain_days: 14
+          keep_minimum_runs: 10
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  cleanup-docker-workflow-runs:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Delete stale Docker Images workflow runs
+        uses: Mattraks/delete-workflow-runs@v2.0.6
+        with:
+          delete_workflow_pattern: docker-images.yml
           retain_days: 14
           keep_minimum_runs: 10
         env:
