@@ -186,6 +186,30 @@ class OpenAIClient:
         normalized = " ".join(raw.split())
         return normalized[:max_chars]
 
+    @staticmethod
+    def _extract_reasoning_effort(request: Dict[str, Any]) -> Optional[str]:
+        reasoning = request.get("reasoning")
+        if not isinstance(reasoning, dict):
+            return None
+        effort = reasoning.get("effort")
+        if effort is None:
+            return None
+        return str(effort)
+
+    def _log_request_shape(self, request: Dict[str, Any], phase: str) -> None:
+        logger.info(
+            "Responses request shape phase=%s model=%s temperature=%s top_p=%s reasoning_effort=%s "
+            "context_management=%s metadata=%s extra_body=%s",
+            phase,
+            request.get("model"),
+            "present" if "temperature" in request else "absent",
+            "present" if "top_p" in request else "absent",
+            self._extract_reasoning_effort(request) or "absent",
+            "present" if "context_management" in request else "absent",
+            "present" if "metadata" in request else "absent",
+            "present" if "extra_body" in request else "absent",
+        )
+
     def _build_upstream_protocol_error(self, error: APIError) -> HTTPException:
         raw_status_code = getattr(error, "status_code", None)
         status_code = self._normalize_error_status_code(raw_status_code)
@@ -227,6 +251,15 @@ class OpenAIClient:
             message = f"{message}{hint_suffix}. Body preview: {body_preview}"
         else:
             message = f"{message}{hint_suffix}."
+
+        logger.warning(
+            "Upstream protocol mismatch status=%s content_type=%s cf_mitigated=%s cf_ray=%s body_preview=%s",
+            status_code,
+            content_type or "<missing>",
+            cf_mitigated or "<missing>",
+            cf_ray or "<missing>",
+            body_preview or "<empty>",
+        )
 
         return HTTPException(status_code=status_code, detail=message)
 
@@ -319,6 +352,7 @@ class OpenAIClient:
         # These are compatibility-only fields; if upstream rejects them or emits transient gateway
         # failures, retry once without them to maximize request success.
         fallback_fields = ("metadata", "context_management", "extra_body")
+        self._log_request_shape(retry_request, phase="initial")
 
         try:
             return await self.client.responses.create(**retry_request)
@@ -337,6 +371,10 @@ class OpenAIClient:
                 type(error).__name__,
                 ", ".join(removed_fields),
             )
+            self._log_request_shape(
+                retry_request,
+                phase=f"retry_without_optional_fields_trigger={trigger_field}",
+            )
             return await self.client.responses.create(**retry_request)
         except APIError as error:
             # Some gateways return transient 5xx (e.g. 502) for optional fields like context_management.
@@ -352,6 +390,10 @@ class OpenAIClient:
                     "Upstream returned %s; retrying /v1/responses without optional fields: %s.",
                     getattr(error, "status_code", "unknown"),
                     ", ".join(removed_fields),
+                )
+                self._log_request_shape(
+                    retry_request,
+                    phase=f"retry_after_status={getattr(error, 'status_code', 'unknown')}",
                 )
                 return await self.client.responses.create(**retry_request)
 
@@ -370,6 +412,10 @@ class OpenAIClient:
                         "Upstream protocol parse error (%s); retrying /v1/responses once.",
                         type(error).__name__,
                     )
+                self._log_request_shape(
+                    retry_request,
+                    phase=f"retry_after_protocol_error={type(error).__name__}",
+                )
                 return await self.client.responses.create(**retry_request)
 
             raise
@@ -391,6 +437,10 @@ class OpenAIClient:
                     "Upstream JSON parse failure (%s); retrying /v1/responses once.",
                     type(error).__name__,
                 )
+            self._log_request_shape(
+                retry_request,
+                phase=f"retry_after_json_parse_error={type(error).__name__}",
+            )
             return await self.client.responses.create(**retry_request)
 
     async def create_response(

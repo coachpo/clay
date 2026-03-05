@@ -1317,7 +1317,7 @@ async def test_messages_explicit_temperature_is_forwarded() -> None:
                 "max_tokens": 64,
                 "temperature": 0.2,
                 "messages": [{"role": "user", "content": "Explicit temperature"}],
-                "thinking": {"type": "adaptive"},
+                "thinking": {"type": "disabled"},
             }
         )
     finally:
@@ -1327,6 +1327,32 @@ async def test_messages_explicit_temperature_is_forwarded() -> None:
     _assert_request_id_headers(response)
     assert stub_client.last_request is not None
     assert stub_client.last_request.get("temperature") == 0.2, stub_client.last_request
+    reasoning = stub_client.last_request.get("reasoning")
+    assert isinstance(reasoning, dict), stub_client.last_request
+    assert reasoning.get("effort") == "none", stub_client.last_request
+
+
+async def test_messages_explicit_temperature_requires_thinking_disabled() -> None:
+    stub_client = _StubOpenAIClientForMessages()
+    original_client = api_endpoints.openai_client
+    api_endpoints.openai_client = stub_client
+    try:
+        response = await _post_messages_in_process(
+            {
+                "model": "claude-opus-4-6",
+                "max_tokens": 64,
+                "temperature": 0.2,
+                "messages": [{"role": "user", "content": "Drop temperature without explicit disable"}],
+                "thinking": {"type": "adaptive"},
+            }
+        )
+    finally:
+        api_endpoints.openai_client = original_client
+
+    assert 200 <= response.status_code < 300, response.text
+    _assert_request_id_headers(response)
+    assert stub_client.last_request is not None
+    assert "temperature" not in stub_client.last_request, stub_client.last_request
 
 
 async def test_messages_explicit_temperature_scales_to_x2_when_enabled() -> None:
@@ -1342,7 +1368,7 @@ async def test_messages_explicit_temperature_scales_to_x2_when_enabled() -> None
                 "max_tokens": 64,
                 "temperature": 0.2,
                 "messages": [{"role": "user", "content": "Scaled temperature"}],
-                "thinking": {"type": "adaptive"},
+                "thinking": {"type": "disabled"},
             }
         )
     finally:
@@ -1353,6 +1379,9 @@ async def test_messages_explicit_temperature_scales_to_x2_when_enabled() -> None
     _assert_request_id_headers(response)
     assert stub_client.last_request is not None
     assert stub_client.last_request.get("temperature") == 0.4, stub_client.last_request
+    reasoning = stub_client.last_request.get("reasoning")
+    assert isinstance(reasoning, dict), stub_client.last_request
+    assert reasoning.get("effort") == "none", stub_client.last_request
 
 
 async def test_messages_drops_sampling_fields_when_reasoning_conflicts_by_default() -> None:
@@ -1436,10 +1465,10 @@ async def test_messages_strict_error_when_sampling_conflicts() -> None:
 
     payload = _assert_anthropic_error_shape(response, expected_status=400)
     message = payload["error"].get("message", "")
-    assert "Sampling fields temperature/top_p are not supported" in message, payload
+    assert "Sampling fields temperature/top_p require thinking.type='disabled'" in message, payload
 
 
-async def test_messages_non_gpt5_model_keeps_sampling_fields() -> None:
+async def test_messages_non_gpt5_model_applies_sampling_compatibility() -> None:
     stub_client = _StubOpenAIClientForMessages()
     original_client = api_endpoints.openai_client
     original_mode = config.openai_gpt5_sampling_reasoning_compat_mode
@@ -1462,7 +1491,7 @@ async def test_messages_non_gpt5_model_keeps_sampling_fields() -> None:
     assert 200 <= response.status_code < 300, response.text
     _assert_request_id_headers(response)
     assert stub_client.last_request is not None
-    assert stub_client.last_request.get("temperature") == 0.2, stub_client.last_request
+    assert "temperature" not in stub_client.last_request, stub_client.last_request
     reasoning = stub_client.last_request.get("reasoning")
     assert isinstance(reasoning, dict), stub_client.last_request
     assert reasoning.get("effort") == "high", stub_client.last_request
@@ -2456,22 +2485,25 @@ async def main() -> None:
     print("- messages omitted temperature passthrough check passed")
 
     await test_messages_explicit_temperature_is_forwarded()
-    print("- messages explicit temperature passthrough check passed")
+    print("- messages explicit temperature passthrough (thinking.disabled) check passed")
+
+    await test_messages_explicit_temperature_requires_thinking_disabled()
+    print("- messages explicit temperature requires thinking.disabled check passed")
 
     await test_messages_explicit_temperature_scales_to_x2_when_enabled()
     print("- messages explicit temperature x2 scaling check passed")
 
     await test_messages_drops_sampling_fields_when_reasoning_conflicts_by_default()
-    print("- messages gpt5 default drop_sampling conflict handling check passed")
+    print("- messages default drop_sampling conflict handling check passed")
 
     await test_messages_force_reasoning_none_when_sampling_conflicts()
-    print("- messages gpt5 force_reasoning_none conflict handling check passed")
+    print("- messages force_reasoning_none conflict handling check passed")
 
     await test_messages_strict_error_when_sampling_conflicts()
-    print("- messages gpt5 strict_error conflict handling check passed")
+    print("- messages strict_error conflict handling check passed")
 
-    await test_messages_non_gpt5_model_keeps_sampling_fields()
-    print("- messages non-gpt5 sampling passthrough check passed")
+    await test_messages_non_gpt5_model_applies_sampling_compatibility()
+    print("- messages non-gpt5 sampling compatibility check passed")
 
     await test_messages_maps_max_effort_to_openai_xhigh()
     print("- messages adaptive max effort maps to xhigh check passed")
