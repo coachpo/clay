@@ -19,6 +19,36 @@ It provides:
 - Optional retry fallback that strips optional fields (`metadata`, `context_management`, `extra_body`) when upstreams reject them or return retryable/protocol failures.
 - Sampling policy: `temperature` and `top_p` are accepted for Anthropic compatibility but always ignored (not forwarded upstream).
 
+## Reasoning effort mapping
+
+Clay resolves OpenAI `reasoning.effort` from Anthropic fields in this order:
+
+1. `output_config.effort` (if present and recognized)
+2. otherwise `thinking`
+3. otherwise omit `reasoning` entirely
+
+Mappings currently implemented:
+
+- `output_config.effort`:
+  - `low` -> `medium`
+  - `medium` -> `high`
+  - `high` -> `xhigh`
+  - `max` -> `xhigh`
+- `thinking.type`:
+  - `disabled` -> omit `reasoning`
+  - `adaptive` -> omit `reasoning`
+  - `enabled` with `budget_tokens`:
+    - `< 1024` -> `medium`
+    - `< 4096` -> `high`
+    - `>= 4096` -> `xhigh`
+  - `enabled` without `budget_tokens` -> omit `reasoning`
+
+When omitted, Clay does not send `reasoning` in the upstream payload. Effective default behavior is then determined by the upstream model/provider.
+
+Reference implementation and tests:
+- `app/conversion/request_converter.py` (`_resolve_reasoning_effort`, `_map_output_effort_to_openai_reasoning_effort`, `_map_thinking_budget_to_reasoning_effort`)
+- `tests/test_main.py` (reasoning mapping coverage)
+
 ## Requirements
 
 - Python `>=3.13`

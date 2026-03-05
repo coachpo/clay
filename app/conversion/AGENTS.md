@@ -22,6 +22,10 @@
 - Tool-call JSON argument deltas are buffered/emitted incrementally and flushed when tool block starts/completes.
 - Usage extraction tolerates provider variants (`prompt_tokens`/`input_tokens`, `completion_tokens`/`output_tokens`) and cache/reasoning detail fields.
 - Sampling passthrough compatibility is universal: accept `temperature`/`top_p` for compatibility, but always drop them before upstream dispatch.
+- Reasoning effort resolution order is deterministic:
+  - Prefer `output_config.effort` mapping (`low -> medium`, `medium -> high`, `high|max -> xhigh`).
+  - Otherwise use `thinking`: `enabled` budget maps (`<1024 -> medium`, `<4096 -> high`, `>=4096 -> xhigh`), while `adaptive` and `disabled` omit reasoning.
+  - If no effort resolves, omit `reasoning` from the upstream request (provider default applies).
 
 ## STREAMING STATE MACHINE
 - Emit `message_start`, then `ping`, before any block events.
