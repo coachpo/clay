@@ -21,7 +21,7 @@
 - Claude streaming sequence is strict: `message_start` -> `ping` -> content block events -> `message_delta` -> `message_stop`.
 - Tool-call JSON argument deltas are buffered/emitted incrementally and flushed when tool block starts/completes.
 - Usage extraction tolerates provider variants (`prompt_tokens`/`input_tokens`, `completion_tokens`/`output_tokens`) and cache/reasoning detail fields.
-- GPT-5 reasoning/sampling compatibility behavior is controlled by `OPENAI_GPT5_SAMPLING_REASONING_COMPAT_MODE` (drop/force/strict).
+- Sampling passthrough compatibility is universal: accept `temperature`/`top_p` for compatibility, but always drop them before upstream dispatch.
 
 ## CONVENTIONS
 - Keep conversions deterministic and side-effect free except logging warnings for compatibility shims.

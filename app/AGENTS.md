@@ -48,7 +48,7 @@ clay
 - `core/config.py` and `core/logging.py` run import-time side effects; moving imports can change startup behavior.
 - `main.py` and `core/logging.py` each normalize log levels; keep semantics aligned when changing either file.
 - `api/endpoints.py` is large and contract-heavy; keep bugfixes minimal and targeted.
-- Compatibility/extension flags affect conversion and metadata passthrough (for example `OPENAI_GPT5_SAMPLING_REASONING_COMPAT_MODE`).
+- Compatibility/extension flags affect conversion and metadata passthrough.
 
 ## ESCALATION
 - API response/error-shape changes require synchronized updates to converters + `tests/test_main.py` expectations.

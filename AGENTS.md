@@ -110,4 +110,4 @@ docker build -t clay .
 - `.github/workflows/docker-images.yml` builds multi-arch images (`linux/amd64,linux/arm64`) and only pushes outside pull requests.
 - `app/models/openai.py` defines compatibility request models; active OpenAI-compatible HTTP routes currently expose only `/v1/models*`.
 - `config = Config()` runs at import time and exits process on invalid required env or invalid state mode.
-- No `README.md` or `QUICKSTART.md` is maintained; AGENTS guides are the primary in-repo operator docs.
+- `README.md` provides operator quickstart; AGENTS guides remain the detailed in-repo implementation reference.

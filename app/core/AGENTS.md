@@ -14,7 +14,6 @@
 - `Config()` requires `OPENAI_API_KEY`; invalid config exits process at import time (`sys.exit(1)`).
 - `ANTHROPIC_API_KEY` is optional; absence disables client-key validation with a startup warning.
 - `OPENAI_RESPONSES_STATE_MODE` must be `stateless` or `provider`.
-- `OPENAI_GPT5_SAMPLING_REASONING_COMPAT_MODE` must be one of `off`, `drop_sampling`, `force_reasoning_none`, `strict_error`.
 - `MIDDLE_MODEL` defaults to `BIG_MODEL` when unset.
 - `OpenAIClient._normalize_base_url()` appends `/v1` only for non-Azure mode root URLs.
 - Optional-field fallback retries once without `metadata`/`context_management` when upstream rejects those parameters.

@@ -86,10 +86,11 @@ def convert_claude_to_responses_request(
         )
         if value is not None
     ]
-    if claude_request.temperature is not None:
-        responses_request["temperature"] = _map_temperature_for_openai(claude_request.temperature)
-    if claude_request.top_p is not None:
-        responses_request["top_p"] = claude_request.top_p
+    if requested_sampling_fields:
+        logger.warning(
+            "Ignoring sampling fields %s: proxy accepts temperature/top_p but does not forward them upstream.",
+            ", ".join(requested_sampling_fields),
+        )
     if claude_request.metadata is not None:
         responses_request["metadata"] = claude_request.metadata.model_dump(exclude_none=True)
     if claude_request.service_tier is not None:
@@ -112,12 +113,6 @@ def convert_claude_to_responses_request(
         thinking=claude_request.thinking,
         output_config=claude_request.output_config,
     )
-    reasoning_effort = _apply_sampling_reasoning_compatibility(
-        responses_request=responses_request,
-        model_name=openai_model,
-        thinking=claude_request.thinking,
-        reasoning_effort=reasoning_effort,
-    )
     if reasoning_effort is not None:
         responses_request["reasoning"] = {"effort": reasoning_effort}
     if claude_request.context_management is not None:
@@ -126,12 +121,11 @@ def convert_claude_to_responses_request(
         )
 
     logger.debug(
-        "Sampling compatibility summary: model=%s requested_sampling=%s forwarded_sampling=%s reasoning=%s mode=%s",
+        "Sampling handling summary: model=%s requested_sampling=%s forwarded_sampling=%s reasoning=%s",
         openai_model,
         requested_sampling_fields,
-        [field for field in ("temperature", "top_p") if field in responses_request],
+        [],
         reasoning_effort,
-        config.openai_gpt5_sampling_reasoning_compat_mode,
     )
     logger.debug(
         "Converted Claude request to OpenAI Responses format: %s",
@@ -526,74 +520,6 @@ def _map_output_effort_to_openai_reasoning_effort(effort: Optional[str]) -> Opti
     if effort in {"high", "max"}:
         return "xhigh"
     return None
-
-
-def _map_temperature_for_openai(anthropic_temperature: float) -> float:
-    # Keep direct passthrough by default for Anthropic compatibility.
-    # x2 mapping is opt-in for specific OpenAI-compatible upstreams that prefer 0..2 tuning.
-    if not config.anthropic_temperature_scale_to_openai_x2:
-        return anthropic_temperature
-    return anthropic_temperature * 2
-
-
-def _thinking_explicitly_disables_reasoning(thinking: Optional[ClaudeThinkingConfig]) -> bool:
-    return thinking is not None and thinking.type == "disabled"
-
-
-def _apply_sampling_reasoning_compatibility(
-    responses_request: Dict[str, Any],
-    model_name: str,
-    thinking: Optional[ClaudeThinkingConfig],
-    reasoning_effort: Optional[str],
-) -> Optional[str]:
-    mode = config.openai_gpt5_sampling_reasoning_compat_mode
-    if mode == "off":
-        return reasoning_effort
-
-    conflicting_fields = [field for field in ("temperature", "top_p") if field in responses_request]
-    if not conflicting_fields:
-        return reasoning_effort
-
-    explicit_sampling_opt_in = _thinking_explicitly_disables_reasoning(thinking)
-    has_reasoning_conflict = reasoning_effort not in {None, "none"}
-    has_explicit_opt_in_conflict = not explicit_sampling_opt_in
-
-    if not has_reasoning_conflict and not has_explicit_opt_in_conflict:
-        return "none"
-
-    if mode == "drop_sampling":
-        for field in conflicting_fields:
-            responses_request.pop(field, None)
-        logger.warning(
-            "Dropped sampling fields %s for model '%s' under OPENAI_GPT5_SAMPLING_REASONING_COMPAT_MODE=drop_sampling "
-            "(explicit_disabled=%s reasoning_effort=%s).",
-            ", ".join(conflicting_fields),
-            model_name,
-            explicit_sampling_opt_in,
-            reasoning_effort if reasoning_effort is not None else "none",
-        )
-        return reasoning_effort
-
-    if mode == "force_reasoning_none":
-        logger.warning(
-            "Forcing reasoning effort to 'none' for model '%s' because sampling fields %s were set "
-            "under OPENAI_GPT5_SAMPLING_REASONING_COMPAT_MODE=force_reasoning_none "
-            "(explicit_disabled=%s reasoning_effort=%s).",
-            model_name,
-            ", ".join(conflicting_fields),
-            explicit_sampling_opt_in,
-            reasoning_effort if reasoning_effort is not None else "none",
-        )
-        return "none"
-
-    if mode == "strict_error":
-        raise ValueError(
-            "Sampling fields temperature/top_p require thinking.type='disabled' and reasoning effort "
-            "'none'. Remove sampling fields, set thinking.type='disabled', use force_reasoning_none, "
-            "or change OPENAI_GPT5_SAMPLING_REASONING_COMPAT_MODE."
-        )
-
-    return reasoning_effort
 
 
 def _convert_context_management_for_responses(

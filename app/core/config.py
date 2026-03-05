@@ -61,11 +61,6 @@ class Config:
         self.anthropic_allow_unknown_fields = _env_flag(
             "ANTHROPIC_ALLOW_UNKNOWN_FIELDS", self.anthropic_compatibility_mode
         )
-        # Optional compatibility knob for providers that expect a wider temperature range.
-        # Default is disabled to preserve Anthropic client intent and avoid surprise randomness shifts.
-        self.anthropic_temperature_scale_to_openai_x2 = _env_flag(
-            "ANTHROPIC_TEMPERATURE_SCALE_TO_OPENAI_X2", False
-        )
         self.allow_openai_extension_passthrough = _env_flag(
             "ALLOW_OPENAI_EXTENSION_PASSTHROUGH", False
         )
@@ -77,21 +72,6 @@ class Config:
         )
         if self.openai_responses_state_mode not in {"stateless", "provider"}:
             raise ValueError("OPENAI_RESPONSES_STATE_MODE must be either 'stateless' or 'provider'")
-        self.openai_gpt5_sampling_reasoning_compat_mode = (
-            os.environ.get("OPENAI_GPT5_SAMPLING_REASONING_COMPAT_MODE", "drop_sampling")
-            .strip()
-            .lower()
-        )
-        if self.openai_gpt5_sampling_reasoning_compat_mode not in {
-            "off",
-            "drop_sampling",
-            "force_reasoning_none",
-            "strict_error",
-        }:
-            raise ValueError(
-                "OPENAI_GPT5_SAMPLING_REASONING_COMPAT_MODE must be one of "
-                "'off', 'drop_sampling', 'force_reasoning_none', 'strict_error'"
-            )
 
     def validate_api_key(self) -> bool:
         """Basic API key validation."""
