@@ -23,6 +23,13 @@
 - Usage extraction tolerates provider variants (`prompt_tokens`/`input_tokens`, `completion_tokens`/`output_tokens`) and cache/reasoning detail fields.
 - Sampling passthrough compatibility is universal: accept `temperature`/`top_p` for compatibility, but always drop them before upstream dispatch.
 
+## STREAMING STATE MACHINE
+- Emit `message_start`, then `ping`, before any block events.
+- Create block indexes lazily when first text/thinking/tool data arrives.
+- Buffer tool argument fragments until tool block metadata is ready; then emit `input_json_delta` fragments in order.
+- Close all started blocks before final `message_delta` + `message_stop`.
+- On disconnect/cancellation, emit Claude-shape error payload (`cancelled`) instead of partial OpenAI-native events.
+
 ## CONVENTIONS
 - Keep conversions deterministic and side-effect free except logging warnings for compatibility shims.
 - Preserve Unicode fidelity in serialized JSON (`ensure_ascii=False`).

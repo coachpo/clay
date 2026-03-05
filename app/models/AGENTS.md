@@ -1,7 +1,7 @@
 # MODELS KNOWLEDGE BASE
 
 ## OVERVIEW
-`models/` defines strict Claude schema contracts and permissive OpenAI compatibility request models used by API validation/conversion flows.
+`models/` defines strict Claude schema contracts and permissive OpenAI compatibility request models used by API validation and conversion flows.
 
 ## WHERE TO LOOK
 - Claude request/content/tool/thinking schemas: `claude.py`.
@@ -33,6 +33,6 @@
 
 ## VERIFICATION
 ```bash
-mypy app/
+mypy app
 python tests/test_main.py
 ```

@@ -1,7 +1,7 @@
 # API KNOWLEDGE BASE
 
 ## OVERVIEW
-`endpoints.py` owns request contract enforcement, Anthropic generation lifecycle, OpenAI-compatible model discovery, and disconnect-aware cancellation glue.
+`endpoints.py` owns Anthropic request contract enforcement, generation lifecycle, token estimation, OpenAI-compatible model discovery, and disconnect-aware cancellation glue.
 
 ## WHERE TO LOOK
 - Main Anthropic path: `create_message()` (`POST /v1/messages`).
@@ -11,6 +11,14 @@
 - Version handling: `_resolve_requested_anthropic_version()` + fallback helpers.
 - Disconnect cancellation: `_create_response_with_disconnect_cancellation()` + `_wait_for_http_disconnect()`.
 - Error payload shaping: `_anthropic_error_response()`, `_openai_error_response()`, status-to-type mappers.
+- Removed routes: `chat_completions_removed()` and `responses_removed()` (`POST /v1/chat/completions`, `POST /v1/responses`).
+
+## ROUTE GROUPS
+- `POST /v1/messages`: parse + validate Claude request, convert, call provider, stream/non-stream branching.
+- `POST /v1/messages/count_tokens`: deterministic input token estimation over messages/tools/thinking/context blocks.
+- `POST /v1/chat/completions` and `POST /v1/responses`: compatibility placeholders that always return 404.
+- `GET /v1/models*`: OpenAI-compatible model discovery guarded by OpenAI-style auth validator.
+- Health/introspection: `GET /health`, `GET /test-connection`, `GET /`.
 
 ## LOCAL CONTRACTS
 - Anthropic request-size guard enforces 32 MB by `content-length` before body parsing (`MAX_ANTHROPIC_REQUEST_BYTES`).
@@ -25,7 +33,7 @@
 - Optional Anthropic compatibility metadata may be attached into provider payload `extra_body.proxy_metadata`.
 
 ## CONVENTIONS
-- Keep Anthropic and OpenAI error envelopes distinct and status-mapped (`invalid_request_error`, `api_error`, etc.).
+- Keep Anthropic and OpenAI error envelopes distinct and status-mapped (`invalid_request_error`, `api_error`, `server_error`).
 - Keep `request_id` threading consistent across API, conversion, and client cancellation maps.
 - Keep bugfixes minimal in this file; helpers are shared by multiple routes and tests assert exact shapes.
 

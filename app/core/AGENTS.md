@@ -1,7 +1,7 @@
 # CORE KNOWLEDGE BASE
 
 ## OVERVIEW
-`core/` owns import-time runtime configuration, provider transport and retries, cancellation primitives, model routing policy, constants, and shared logging setup.
+`core/` owns import-time runtime configuration, provider transport/retries, request cancellation primitives, model routing policy, constants, and shared logging setup.
 
 ## WHERE TO LOOK
 - Env/config parsing + compatibility flags: `config.py`.
@@ -16,11 +16,17 @@
 - `OPENAI_RESPONSES_STATE_MODE` must be `stateless` or `provider`.
 - `MIDDLE_MODEL` defaults to `BIG_MODEL` when unset.
 - `OpenAIClient._normalize_base_url()` appends `/v1` only for non-Azure mode root URLs.
-- Optional-field fallback retries once without `metadata`/`context_management` when upstream rejects those parameters.
+- Optional-field fallback retries once without `metadata`/`context_management`/`extra_body` when upstream rejects those parameters, returns retryable 5xx, or emits protocol parse failures.
 - `OpenAIClient.active_requests[request_id]` stores cancellation events shared with API/conversion layers.
 - `create_response_stream()` always forces `stream=True` on provider request.
 - `cancel_request(request_id)` signals cancellation via `asyncio.Event` and must stay non-blocking.
 - Model pass-through applies to prefix-matched names only (`gpt-*`, `o1-*`, `o3-*`, `o4-*`, `gpt-5`, `ep-*`, `doubao-*`, `deepseek-*`); other names are routed by `haiku`/`sonnet`/`opus` heuristics to configured models.
+
+## CLIENT RETRY FLOW
+- First attempt sends full Responses payload.
+- On unsupported optional fields, retry once after stripping optional compatibility fields.
+- On retryable gateway/server statuses, retry once with optional compatibility fields removed.
+- On protocol parse failures (`APIResponseValidationError`, JSON parse signatures, non-JSON payload hints), surface normalized protocol error semantics and apply one fallback retry where implemented.
 
 ## CONVENTIONS
 - Normalize provider failures to `HTTPException` with classified, user-actionable messages.
@@ -35,6 +41,6 @@
 
 ## VERIFICATION
 ```bash
-mypy app/
+mypy app
 python tests/test_main.py
 ```

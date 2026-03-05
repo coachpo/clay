@@ -13,15 +13,16 @@
 
 ## MODULE MAP
 - `main.py`: FastAPI app assembly, path-aware exception handlers, `clay` CLI runtime entrypoint.
-- `api/endpoints.py`: Anthropic generation routes + OpenAI-compatible models surface + request contract enforcement.
+- `api/endpoints.py`: Anthropic generation routes + OpenAI-compatible model discovery + request-contract gates.
 - `core/config.py`: import-time env/config validation and compatibility feature flags.
-- `core/client.py`: OpenAI/Azure transport, optional-field fallback retry, active-request cancellation map.
+- `core/client.py`: OpenAI/Azure transport, optional-field fallback retry (`metadata/context_management/extra_body`), protocol error normalization, active-request cancellation map.
 - `core/model_manager.py`: Claude model-name routing to configured target providers/models.
 - `core/logging.py`: shared logging config and uvicorn log-level suppression.
+- `core/constants.py`: protocol constants for roles/content blocks/SSE events/stop reasons.
 - `conversion/request_converter.py`: Claude request/tool/thinking/context conversion to OpenAI Responses payload.
-- `conversion/response_converter.py`: Responses/chat chunk normalization back to Claude JSON/SSE contracts.
+- `conversion/response_converter.py`: Responses + legacy chunk normalization back to Claude JSON/SSE contracts.
 - `models/claude.py`: strict Claude schemas + forward-compat variants + role/block validators.
-- `models/openai.py`: permissive compatibility request models (`extra="allow"`).
+- `models/openai.py`: permissive OpenAI compatibility request models (`extra="allow"`).
 
 ## CROSS-MODULE CONTRACTS
 - Preserve request IDs in both headers on Anthropic/OpenAI paths: `request-id` and `x-request-id`.
@@ -30,16 +31,17 @@
 - `/v1/models*` remains active and is guarded by OpenAI-compatible API-key validation.
 - Cancellation uses shared `request_id` across API handler, conversion stream bridge, and `OpenAIClient.active_requests`.
 - Streaming event order must remain Claude-compatible: `message_start` -> `ping` -> block events -> `message_delta` -> `message_stop`.
-- Token ceilings are clamped by config limits before upstream dispatch (`MIN_TOKENS_LIMIT`, `MAX_TOKENS_LIMIT`).
+- Sampling compatibility fields (`temperature`, `top_p`) are accepted but dropped before upstream dispatch.
+- Provider protocol parse failures are normalized in core client and surfaced through API-specific error envelopes.
 
 ## LOCAL COMMANDS
 ```bash
 python -m pip install --upgrade pip
 python -m pip install '.[dev]'
-mypy app/
-black app/
-isort app/
-ruff check app/
+mypy app
+ruff check app
+black --check app
+isort --check-only app
 clay
 ./start_proxy.sh
 ```
@@ -48,7 +50,7 @@ clay
 - `core/config.py` and `core/logging.py` run import-time side effects; moving imports can change startup behavior.
 - `main.py` and `core/logging.py` each normalize log levels; keep semantics aligned when changing either file.
 - `api/endpoints.py` is large and contract-heavy; keep bugfixes minimal and targeted.
-- Compatibility/extension flags affect conversion and metadata passthrough.
+- Optional-field fallback in `core/client.py` is shared by stream + non-stream paths; do not split semantics casually.
 
 ## ESCALATION
 - API response/error-shape changes require synchronized updates to converters + `tests/test_main.py` expectations.

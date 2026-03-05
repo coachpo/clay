@@ -1340,7 +1340,9 @@ async def test_messages_explicit_temperature_is_ignored_with_adaptive_thinking()
                 "model": "claude-opus-4-6",
                 "max_tokens": 64,
                 "temperature": 0.2,
-                "messages": [{"role": "user", "content": "Ignore temperature with adaptive thinking"}],
+                "messages": [
+                    {"role": "user", "content": "Ignore temperature with adaptive thinking"}
+                ],
                 "thinking": {"type": "adaptive"},
             }
         )
