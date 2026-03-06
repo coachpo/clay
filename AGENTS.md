@@ -1,16 +1,10 @@
 # PROJECT KNOWLEDGE BASE
 
-**Generated:** 2026-03-05T05:52:05+02:00  
-**Commit:** c2ee483  
-**Branch:** main
-
 ## OVERVIEW
-
-Clay is a Python/FastAPI compatibility proxy that serves Anthropic-compatible generation (`/v1/messages`, `/v1/messages/count_tokens`) and OpenAI-compatible model discovery (`/v1/models*`).
-Requests are translated into OpenAI Responses payloads with deterministic conversion, Claude-shape SSE bridging, request-id parity, and request-scoped cancellation.
+Clay is a FastAPI compatibility proxy that accepts Anthropic-style generation requests and forwards them to OpenAI-compatible Responses providers.
+It preserves Claude request/response contracts (including SSE event ordering), maintains request-id header parity, and supports request-scoped cancellation.
 
 ## AGENTS HIERARCHY
-
 - Nearest `AGENTS.md` wins; parent guidance still applies unless a child overrides it.
 - Root rules apply everywhere.
 - `app/**` -> `app/AGENTS.md`
@@ -20,80 +14,52 @@ Requests are translated into OpenAI Responses payloads with deterministic conver
 - `app/models/**` -> `app/models/AGENTS.md`
 - `tests/**` -> `tests/AGENTS.md`
 
-## STRUCTURE
+## CURRENT API SURFACE
+- Anthropic generation: `POST /v1/messages`
+- Anthropic token estimation: `POST /v1/messages/count_tokens`
+- OpenAI-compatible model discovery: `GET /v1/models`, `GET /v1/models/{model_id}`
+- Removed generation compatibility routes: `POST /v1/chat/completions`, `POST /v1/responses` (intentionally `404`)
+- Utility routes: `GET /health`, `GET /test-connection`, `GET /`
 
+## STRUCTURE MAP
 ```text
 clay/
 |-- app/
-|   |-- main.py                  # FastAPI app assembly + path-aware exception shaping + uvicorn launcher
-|   |-- api/endpoints.py         # Anthropic generation contract + OpenAI models surface + validation/cancellation
-|   |-- core/                    # config/env gates, provider transport/retries, logging, constants, model routing
-|   |-- conversion/              # Claude<->OpenAI request/response translation + streaming event bridge
+|   |-- main.py                  # FastAPI app wiring + exception shaping + CLI entrypoint
+|   |-- api/endpoints.py         # route handlers, auth/version/content-type gates, cancellation glue
+|   |-- core/                    # config/env validation, transport/retry/cancel, routing, logging, constants
+|   |-- conversion/              # Claude <-> OpenAI request/response conversion + streaming bridge
 |   `-- models/                  # strict Claude schemas + permissive OpenAI compatibility schemas
-|-- tests/test_main.py           # script-style integration harness (HTTP + converter/client checks)
-|-- .github/workflows/           # CI quality gates, docker build/push, cleanup automation
+|-- tests/test_main.py           # script-style integration harness (HTTP + in-process checks)
+|-- .github/workflows/           # CI quality gates + Docker image workflows + cleanup
 |-- start_proxy.sh               # compatibility wrapper (`python -m app.main`)
-|-- pyproject.toml               # packaging metadata + tooling config + `clay` entrypoint
+|-- pyproject.toml               # dependency/tooling source of truth + `clay` script entrypoint
 `-- Dockerfile                   # production container image (non-root runtime)
 ```
 
-## WHERE TO LOOK
+## CORE CONTRACTS (DO NOT BREAK)
+- Preserve header parity on contract routes: both `request-id` and `x-request-id`.
+- Keep Anthropic contract validators on protected routes (`validate_api_contract`, `validate_openai_api_contract`).
+- Enforce Anthropic request size limit at `32 MB` (`MAX_ANTHROPIC_REQUEST_BYTES`) using `content-length`.
+- Keep Anthropic version handling config-driven (`ANTHROPIC_*` flags; default `2023-06-01`).
+- Keep sampling compatibility behavior: accept `temperature` and `top_p`, but never forward upstream.
+- Keep OpenAI optional-field fallback behavior in client retries for `metadata`, `context_management`, and `extra_body`.
+- Keep streaming SSE lifecycle order: `message_start` -> `ping` -> block events -> `message_delta` -> `message_stop`.
+- Keep cancellation wired by shared `request_id` across API handlers, converters, and `OpenAIClient.active_requests`.
 
-| Task | Location | Notes |
-| --- | --- | --- |
-| Anthropic request lifecycle | `app/api/endpoints.py` | `/v1/messages` validation, conversion dispatch, stream/non-stream flow |
-| Token counting behavior | `app/api/endpoints.py` | `/v1/messages/count_tokens` estimation across message/tool/thinking blocks |
-| OpenAI-compatible surface | `app/api/endpoints.py` | `/v1/models*` active; generation routes intentionally return 404 |
-| Claude -> OpenAI conversion | `app/conversion/request_converter.py` | field validation, tool/thinking/context mapping, token clamp |
-| OpenAI stream -> Claude SSE | `app/conversion/response_converter.py` | Responses + legacy chunk normalization with strict Claude event order |
-| Provider transport + retries | `app/core/client.py` | optional-field fallback (`metadata/context_management/extra_body`) + protocol error mapping |
-| Config/env behavior | `app/core/config.py` | import-time validation, compatibility flags, state-mode guard |
-| Schema constraints | `app/models/claude.py`, `app/models/openai.py` | strict Claude validation vs permissive OpenAI request models |
-| Integration behavior checks | `tests/test_main.py` | canonical contract harness and regression matrix |
+## REASONING EFFORT RESOLUTION
+- First source: `output_config.effort` (`low -> medium`, `medium -> high`, `high|max -> xhigh`).
+- Fallback source: `thinking` budget (`enabled` with `<1024 -> medium`, `<4096 -> high`, `>=4096 -> xhigh`).
+- Omit `reasoning` when `thinking.type` is `adaptive` or `disabled`, or when no effort resolves.
+- Adaptive thinking is model-gated by prefixes in `ADAPTIVE_THINKING_MODEL_PREFIXES` (`claude-opus-4-6`, `claude-sonnet-4-6`).
 
-## CODE MAP
-
-| Symbol | Type | Location | Refs | Role |
-| --- | --- | --- | --- | --- |
-| `create_message` | async function | `app/api/endpoints.py` | high | Main Anthropic `/v1/messages` lifecycle |
-| `_create_response_with_disconnect_cancellation` | async function | `app/api/endpoints.py` | medium | Non-stream disconnect-aware cancellation |
-| `OpenAIClient._create_with_metadata_fallback` | async method | `app/core/client.py` | high | Optional-field fallback retry policy |
-| `OpenAIClient.create_response_stream` | async method | `app/core/client.py` | high | Streaming Responses transport + cancellation checks |
-| `convert_claude_to_openai` | function | `app/conversion/request_converter.py` | high | Claude -> OpenAI Responses payload translation |
-| `convert_openai_streaming_to_claude_with_cancellation` | async function | `app/conversion/response_converter.py` | high | OpenAI stream -> Claude SSE bridge with disconnect cancellation |
-| `parse_claude_messages_request` | function | `app/models/claude.py` | medium | Strict vs forward-compat request parsing gate |
-| `ModelManager.map_claude_model_to_openai` | method | `app/core/model_manager.py` | medium | Model routing policy |
-
-## CONVENTIONS
-
-- Use `pyproject.toml` as dependency/source-of-truth (`python -m pip install '.[dev]'` for local checks).
-- Canonical runtime entrypoint is `clay` (`pyproject` script -> `app.main:main`); `start_proxy.sh` is compatibility-only.
-- Contract responses include both `request-id` and `x-request-id` headers on Anthropic/OpenAI paths.
-- Anthropic header validation is config-driven (`ANTHROPIC_SUPPORTED_VERSIONS`, fallback/missing toggles, default `2023-06-01`).
-- Compatibility sampling fields (`temperature`, `top_p`) are accepted but never forwarded upstream.
-- Provider fallback retries can strip `metadata`, `context_management`, and `extra_body` on unsupported/retryable/protocol failures.
-- Canonical behavior verification is `python tests/test_main.py`; CI quality workflow runs static checks + compile smoke only.
-- Docker image context is allowlist-based via `.dockerignore` (`app/**` + `pyproject.toml`).
-
-## ANTI-PATTERNS (THIS PROJECT)
-
-- Do not rely on stale docs command `python app/test_claude_to_openai.py` (file does not exist).
-- Do not use removed generation routes `POST /v1/chat/completions` or `POST /v1/responses`; they intentionally return 404.
-- Do not assume `docker-compose.yml` exists; this repo currently has no compose file.
-- Do not remove request-id header parity (`request-id` and `x-request-id`) from API responses.
-- Do not bypass contract validators on protected routes (`validate_api_contract`, `validate_openai_api_contract`).
-- Do not reorder Claude SSE lifecycle events; clients depend on strict order.
-- Do not treat provider-dependent integration skips/timeouts as deterministic product regressions.
-
-## UNIQUE STYLES
-
-- One router serves Anthropic-compatible generation and OpenAI-compatible model discovery with explicit contract separation.
-- Conversion layer handles both Responses-style events and legacy chat-completion chunks while preserving Claude SSE semantics.
-- Cancellation is coordinated across API, conversion, and client layers via shared `request_id`.
-- Optional Anthropic compatibility metadata can be attached to provider payload `extra_body.proxy_metadata`.
+## TESTING AND TOOLING REALITY
+- Canonical behavior harness: `python tests/test_main.py` (script-style, `asyncio.run(main())`).
+- CI (`.github/workflows/ci.yml`) runs formatting, lint, type checks, and compile smoke; it does not run `python tests/test_main.py`.
+- Runtime entrypoint is `clay` (`pyproject.toml` -> `app.main:main`); `start_proxy.sh` is a compatibility wrapper.
+- Docker build context is allowlist-based via `.dockerignore` (runtime files only).
 
 ## COMMANDS
-
 ```bash
 python -m pip install --upgrade pip
 python -m pip install '.[dev]'
@@ -108,10 +74,15 @@ python tests/test_main.py
 docker build -t clay .
 ```
 
-## NOTES
+## ANTI-PATTERNS (THIS REPO)
+- Do not re-enable `POST /v1/chat/completions` or `POST /v1/responses` as generation paths without full contract/conversion/test updates.
+- Do not remove request-id header parity or route-specific error envelope shapes.
+- Do not bypass schema/contract validation for convenience in handlers.
+- Do not reorder Claude SSE lifecycle events.
+- Do not assume provider-dependent skips/timeouts in `tests/test_main.py` are deterministic product regressions.
+- Do not rely on nonexistent legacy command `python app/test_claude_to_openai.py`.
 
-- `tests/test_main.py` is the canonical integration harness and executes sequentially via `asyncio.run(main())`.
-- `.github/workflows/ci.yml` enforces quality gates and docker smoke build, but does not run live integration tests.
-- `.github/workflows/docker-images.yml` builds multi-arch images (`linux/amd64,linux/arm64`) and only pushes outside PRs.
-- `config = Config()` runs at import time and exits on invalid required env or invalid `OPENAI_RESPONSES_STATE_MODE`.
-- `README.md` is operator quickstart; AGENTS guides remain the implementation-focused reference.
+## CHANGE CHECKLIST
+- Update relevant child `AGENTS.md` when local behavior changes.
+- Keep README operator docs and AGENTS implementation guidance aligned.
+- For API/conversion behavior changes, update `tests/test_main.py` in the same change.

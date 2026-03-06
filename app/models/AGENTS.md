@@ -1,35 +1,36 @@
 # MODELS KNOWLEDGE BASE
 
-## OVERVIEW
-`models/` defines strict Claude schema contracts and permissive OpenAI compatibility request models used by API validation and conversion flows.
+## READ WHEN
+- Editing `app/models/claude.py` or `app/models/openai.py`.
+- Changing request schema validation or compatibility model acceptance behavior.
 
-## WHERE TO LOOK
-- Claude request/content/tool/thinking schemas: `claude.py`.
-- OpenAI compatibility request schemas: `openai.py`.
-- Role/content compatibility: `ClaudeMessage.validate_role_content()`.
-- Tool-choice/thinking coupling: `_ClaudeMessagesRequestFields.validate_tool_choice()`.
-- Forward-compat parsing selectors: `parse_claude_messages_request()` and `parse_claude_token_count_request()`.
+## OWNED SCHEMA SURFACE
+- `claude.py`: strict Anthropic request/content/tool/thinking/context schemas + forward-compat variants.
+- `openai.py`: permissive OpenAI compatibility request models (`extra="allow"`).
+- Parse selectors: `parse_claude_messages_request` and `parse_claude_token_count_request`.
 
-## LOCAL CONTRACTS
-- Strict Claude models inherit `StrictBaseModel` (`extra="forbid"`) by default.
-- Forward-compat Claude variants inherit `ForwardCompatBaseModel` (`extra="allow"`) when enabled by config flags.
-- OpenAI compatibility models inherit `OpenAIBaseModel` (`extra="allow"`) and intentionally accept unknown fields.
-- Claude content unions are discriminated by `type`; discriminator literals are protocol-level contract surface.
-- Role enforcement: user blocks allow `text|image|document|tool_result`; assistant blocks allow `text|tool_use|thinking|redacted_thinking`.
-- `thinking.budget_tokens` is valid only when `thinking.type == "enabled"`.
-- `tool_choice` requires `tools` unless choice type is `none`; thinking only supports tool_choice `auto|none`.
-- Context edit ordering is constrained (`clear_thinking_20251015` must be first when combining edits).
-- Token-related numeric fields are bounded positive values where declared (for example `max_tokens`, `max_output_tokens`).
+## CLAUDE SCHEMA CONTRACTS
+- Strict models default to `extra="forbid"` via `StrictBaseModel`.
+- Forward-compat models default to `extra="allow"` via `ForwardCompatBaseModel` and are selected by config flags.
+- Content unions are discriminator-based by `type`; literals are part of public contract.
+- Role/content rules are enforced in `ClaudeMessage.validate_role_content()`.
+- `thinking.budget_tokens` is only valid when `thinking.type == "enabled"`.
+- `tool_choice` validation enforces tools presence (except `none`) and thinking-compatible choice set (`auto|none`).
+- `context_management` edit ordering enforces `clear_thinking_20251015` first when combining edits.
 
-## CONVENTIONS
-- When adding Claude block/tool variants, update schema unions, validators, request converter, response converter, and tests together.
-- Keep defaults and field constraints aligned with endpoint behavior and integration assertions.
-- Prefer schema-level validation over downstream ad-hoc runtime checks.
+## OPENAI COMPATIBILITY MODEL CONTRACTS
+- OpenAI request schemas intentionally allow unknown fields (`OpenAIBaseModel`).
+- Compatibility models are still contract-relevant even when API generation routes are removed.
 
-## ANTI-PATTERNS
-- Do not loosen strict Claude models (`extra="forbid"`) without explicit contract decision.
-- Do not add schema fields without corresponding API/conversion handling and regression tests.
-- Do not assume OpenAI compatibility schemas are dead code; they define public compatibility surface expectations.
+## CHANGE GUIDELINES
+- When adding/changing block or tool variants, update schema unions + converter logic + tests together.
+- Keep field bounds/defaults aligned with endpoint and converter assumptions.
+- Prefer schema validators over ad-hoc runtime checks in API handlers.
+
+## LOCAL ANTI-PATTERNS
+- Do not loosen strict Claude schemas without an explicit contract decision.
+- Do not add schema fields without corresponding conversion and regression-test coverage.
+- Do not treat compatibility models as dead code; they document accepted surface area.
 
 ## VERIFICATION
 ```bash
