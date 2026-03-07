@@ -137,7 +137,7 @@ mypy app
 
 Clay v2.0 is a breaking rewrite:
 
-- **Removed**: OpenAI Responses API support
+- **Adopted**: OpenAI Responses API transport via LiteLLM
 - **Removed**: Heavy custom client/retry stack
 - **Simplified**: Anthropic compatibility layer
 - **Simplified**: Configuration (fewer environment variables)
@@ -147,7 +147,7 @@ Clay v2.0 is a breaking rewrite:
 
 1. Client sends Anthropic Messages API request
 2. Clay validates API key and headers
-3. Clay converts the request into OpenAI-compatible chat completion parameters
+3. Clay converts the request into OpenAI Responses API input/items
 4. LiteLLM forwards the request to the mapped provider model
 5. Clay converts the LiteLLM response back to Anthropic format
 6. Clay returns Anthropic-compatible JSON or SSE events

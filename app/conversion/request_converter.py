@@ -31,160 +31,246 @@ class ModelMapperLike(Protocol):
 
 
 UserContentBlock = Union[
-    ClaudeContentBlockDocument, ClaudeContentBlockImage, ClaudeContentBlockText
+    ClaudeContentBlockDocument,
+    ClaudeContentBlockImage,
+    ClaudeContentBlockText,
 ]
 
 
-def build_completion_request(
+def build_responses_request(
     claude_request: ClaudeMessagesRequestModel,
     model_mapper: ModelMapperLike,
     *,
     max_tokens_limit: int,
-    request_id: str,
     timeout: int,
     api_key: str,
+    api_base: Optional[str] = None,
 ) -> Dict[str, Any]:
-    completion_request: Dict[str, Any] = {
+    _validate_supported_claude_fields_for_responses(claude_request)
+
+    responses_request: Dict[str, Any] = {
         "api_key": api_key,
-        "max_tokens": min(claude_request.max_tokens, max_tokens_limit),
-        "messages": convert_claude_messages_to_openai(claude_request),
-        "metadata": {"request_id": request_id},
+        "input": convert_claude_messages_to_responses_input(claude_request.messages),
+        "max_output_tokens": min(claude_request.max_tokens, max_tokens_limit),
         "model": model_mapper.map_claude_to_openai(claude_request.model),
         "stream": claude_request.stream,
         "timeout": timeout,
     }
 
+    instructions = convert_system_content(claude_request.system)
+    if instructions:
+        responses_request["instructions"] = instructions
+
     if claude_request.temperature is not None:
-        completion_request["temperature"] = claude_request.temperature
+        responses_request["temperature"] = claude_request.temperature
     if claude_request.top_p is not None:
-        completion_request["top_p"] = claude_request.top_p
-    if claude_request.stop_sequences:
-        completion_request["stop"] = claude_request.stop_sequences
+        responses_request["top_p"] = claude_request.top_p
     if claude_request.service_tier:
-        completion_request["service_tier"] = claude_request.service_tier
-    if claude_request.metadata:
-        completion_request["metadata"].update(claude_request.metadata)
+        responses_request["service_tier"] = claude_request.service_tier
 
     if claude_request.tools:
-        completion_request["tools"] = [
-            convert_tool_definition(tool) for tool in claude_request.tools
+        responses_request["tools"] = [
+            convert_function_tool_definition(tool) for tool in claude_request.tools
         ]
 
     if claude_request.tool_choice:
-        tool_choice, parallel_tool_calls = convert_tool_choice(claude_request.tool_choice)
-        completion_request["tool_choice"] = tool_choice
+        tool_choice_value, parallel_tool_calls = convert_tool_choice_for_responses(
+            claude_request.tool_choice
+        )
+        responses_request["tool_choice"] = tool_choice_value
         if parallel_tool_calls is not None:
-            completion_request["parallel_tool_calls"] = parallel_tool_calls
+            responses_request["parallel_tool_calls"] = parallel_tool_calls
 
-    return completion_request
+    reasoning = resolve_reasoning_config(
+        output_config=claude_request.output_config,
+        thinking=claude_request.thinking,
+    )
+    if reasoning is not None:
+        responses_request["reasoning"] = reasoning
+
+    if api_base:
+        responses_request["api_base"] = api_base
+
+    return responses_request
 
 
-def convert_claude_messages_to_openai(
+def _validate_supported_claude_fields_for_responses(
     claude_request: ClaudeMessagesRequestModel,
+) -> None:
+    if claude_request.stop_sequences is not None:
+        raise ValueError(
+            "Field 'stop_sequences' is not supported with the OpenAI Responses API path."
+        )
+    if claude_request.top_k is not None:
+        raise ValueError("Field 'top_k' is not supported with the OpenAI Responses API path.")
+    if claude_request.inference_geo is not None:
+        raise ValueError(
+            "Field 'inference_geo' is not supported with the OpenAI Responses API path."
+        )
+    if claude_request.context_management is not None:
+        raise ValueError(
+            "Field 'context_management' is not supported with the OpenAI Responses API path."
+        )
+
+    for index, tool in enumerate(claude_request.tools or []):
+        if isinstance(tool, ClaudeWebSearchTool):
+            raise ValueError(
+                f"Field 'tools[{index}]' uses native web_search, which is not supported."
+            )
+
+
+def convert_claude_messages_to_responses_input(
+    messages: Sequence[ClaudeMessage],
 ) -> List[Dict[str, Any]]:
-    openai_messages: List[Dict[str, Any]] = []
-
-    system_text = convert_system_content(claude_request.system)
-    if system_text:
-        openai_messages.append({"role": Constants.ROLE_SYSTEM, "content": system_text})
-
-    for message in claude_request.messages:
+    input_items: List[Dict[str, Any]] = []
+    for message in messages:
         if message.role == Constants.ROLE_USER:
-            openai_messages.extend(convert_user_message(message))
-        else:
-            openai_messages.append(convert_assistant_message(message))
+            input_items.extend(convert_claude_user_message_to_responses_items(message))
+            continue
+        if message.role == Constants.ROLE_ASSISTANT:
+            input_items.extend(convert_claude_assistant_message_to_responses_items(message))
+            continue
+        raise ValueError(f"Unsupported role '{message.role}' in Claude message history")
+    return input_items
 
-    return openai_messages
 
-
-def convert_user_message(message: ClaudeMessage) -> List[Dict[str, Any]]:
+def convert_claude_user_message_to_responses_items(message: ClaudeMessage) -> List[Dict[str, Any]]:
     if isinstance(message.content, str):
-        return [{"role": Constants.ROLE_USER, "content": message.content}]
+        return [
+            responses_message_item(
+                Constants.ROLE_USER,
+                [responses_text_part(Constants.ROLE_USER, message.content)],
+            )
+        ]
 
-    messages: List[Dict[str, Any]] = []
+    output_items: List[Dict[str, Any]] = []
     pending_parts: List[Dict[str, Any]] = []
-
-    def flush_user_parts() -> None:
-        if not pending_parts:
-            return
-        messages.append({"role": Constants.ROLE_USER, "content": list(pending_parts)})
-        pending_parts.clear()
 
     for block in message.content:
         if isinstance(block, ClaudeContentBlockToolResult):
-            flush_user_parts()
-            messages.append(
+            if pending_parts:
+                output_items.append(responses_message_item(Constants.ROLE_USER, pending_parts))
+                pending_parts = []
+            output_items.append(
                 {
-                    "role": Constants.ROLE_TOOL,
-                    "tool_call_id": block.tool_use_id,
-                    "content": parse_tool_result_content(block.content),
+                    "type": "function_call_output",
+                    "call_id": block.tool_use_id,
+                    "output": parse_tool_result_content(block.content),
                 }
             )
             continue
 
-        pending_parts.extend(convert_user_block(_as_user_content_block(block)))
+        pending_parts.extend(convert_user_block_to_responses_parts(_as_user_content_block(block)))
 
-    flush_user_parts()
-    return messages
+    if pending_parts or not output_items:
+        output_items.append(responses_message_item(Constants.ROLE_USER, pending_parts))
+
+    return output_items
 
 
-def convert_assistant_message(message: ClaudeMessage) -> Dict[str, Any]:
+def convert_claude_assistant_message_to_responses_items(
+    message: ClaudeMessage,
+) -> List[Dict[str, Any]]:
     if isinstance(message.content, str):
-        return {"role": Constants.ROLE_ASSISTANT, "content": message.content}
+        return [
+            responses_message_item(
+                Constants.ROLE_ASSISTANT,
+                [responses_text_part(Constants.ROLE_ASSISTANT, message.content)],
+            )
+        ]
 
+    output_items: List[Dict[str, Any]] = []
     text_parts: List[str] = []
-    tool_calls: List[Dict[str, Any]] = []
+
+    def flush_assistant_text() -> None:
+        if not text_parts:
+            return
+        output_items.append(
+            responses_message_item(
+                Constants.ROLE_ASSISTANT,
+                [responses_text_part(Constants.ROLE_ASSISTANT, "".join(text_parts))],
+            )
+        )
+        text_parts.clear()
+
     for block in message.content:
         if isinstance(block, ClaudeContentBlockText):
             text_parts.append(block.text)
             continue
+
         if isinstance(block, ClaudeContentBlockThinking):
             text_parts.append(block.thinking)
             continue
+
         if isinstance(block, ClaudeContentBlockRedactedThinking):
             text_parts.append("[redacted thinking]")
             continue
+
         if isinstance(block, ClaudeContentBlockToolUse):
-            tool_calls.append(
+            flush_assistant_text()
+            output_items.append(
                 {
-                    "id": block.id,
-                    "type": Constants.TOOL_FUNCTION,
-                    "function": {
-                        "arguments": json.dumps(block.input, ensure_ascii=False),
-                        "name": block.name,
-                    },
+                    "type": "function_call",
+                    "call_id": block.id,
+                    "name": block.name,
+                    "arguments": json.dumps(block.input, ensure_ascii=False),
                 }
             )
+            continue
 
-    payload: Dict[str, Any] = {
-        "role": Constants.ROLE_ASSISTANT,
-        "content": "".join(text_parts) or None,
+        raise ValueError(f"Unsupported assistant content block type for conversion: {block.type}")
+
+    flush_assistant_text()
+    return output_items
+
+
+def responses_message_item(role: str, content_parts: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
+    normalized_parts = [part for part in content_parts if isinstance(part, dict)]
+    if not normalized_parts:
+        normalized_parts = [responses_text_part(role, "")]
+    return {
+        "type": "message",
+        "role": role,
+        "content": normalized_parts,
     }
-    if tool_calls:
-        payload["tool_calls"] = tool_calls
-    return payload
 
 
-def convert_user_block(block: UserContentBlock) -> List[Dict[str, Any]]:
+def responses_text_part(role: str, text: str) -> Dict[str, str]:
+    part_type = "output_text" if role == Constants.ROLE_ASSISTANT else "input_text"
+    return {"type": part_type, "text": text}
+
+
+def convert_user_block_to_responses_parts(block: UserContentBlock) -> List[Dict[str, Any]]:
     if isinstance(block, ClaudeContentBlockText):
-        return [{"type": Constants.CONTENT_TEXT, "text": block.text}]
-
-    if isinstance(block, ClaudeContentBlockDocument):
-        return [{"type": Constants.CONTENT_TEXT, "text": convert_document_block_to_text(block)}]
+        return [{"type": "input_text", "text": block.text}]
 
     if isinstance(block, ClaudeContentBlockImage):
-        if block.source.type == "base64":
-            return [
-                {
-                    "type": "image_url",
-                    "image_url": {
-                        "url": f"data:{block.source.media_type};base64,{block.source.data}",
-                    },
-                }
-            ]
-        return [{"type": "image_url", "image_url": {"url": block.source.url}}]
+        return [convert_image_block_to_responses_input(block)]
+
+    if isinstance(block, ClaudeContentBlockDocument):
+        return [{"type": "input_text", "text": convert_document_block_to_text(block)}]
 
     raise ValueError(f"Unsupported user content block type for conversion: {block.type}")
+
+
+def convert_tool_choice_for_responses(tool_choice: Any) -> Tuple[Any, Optional[bool]]:
+    parallel_tool_calls: Optional[bool] = None
+
+    if isinstance(tool_choice, ClaudeToolChoiceAuto):
+        tool_choice_value: Any = "auto"
+    elif isinstance(tool_choice, ClaudeToolChoiceAny):
+        tool_choice_value = "required"
+    elif isinstance(tool_choice, ClaudeToolChoiceNone):
+        tool_choice_value = "none"
+    elif isinstance(tool_choice, ClaudeToolChoiceTool):
+        tool_choice_value = {"type": Constants.TOOL_FUNCTION, "name": tool_choice.name}
+    else:
+        raise ValueError("Unsupported tool_choice value for conversion")
+
+    if getattr(tool_choice, "disable_parallel_tool_use", None) is not None:
+        parallel_tool_calls = not bool(tool_choice.disable_parallel_tool_use)
+
+    return tool_choice_value, parallel_tool_calls
 
 
 def parse_tool_result_content(content: Any) -> str:
@@ -204,23 +290,27 @@ def parse_tool_result_content(content: Any) -> str:
             elif isinstance(item, ClaudeContentBlockImage):
                 parts.append("[image content omitted]")
             elif isinstance(item, dict):
-                if item.get("type") == Constants.CONTENT_TEXT and isinstance(item.get("text"), str):
+                item_type = item.get("type")
+                if item_type == Constants.CONTENT_TEXT and isinstance(item.get("text"), str):
                     parts.append(item["text"])
-                elif item.get("type") == Constants.CONTENT_DOCUMENT:
+                elif item_type == Constants.CONTENT_DOCUMENT:
                     parts.append(convert_document_dict_to_text(item))
-                elif item.get("type") == Constants.CONTENT_IMAGE:
+                elif item_type == Constants.CONTENT_IMAGE:
                     parts.append("[image content omitted]")
+                else:
+                    parts.append(json.dumps(item, ensure_ascii=False))
             else:
                 parts.append(str(item))
         return "\n".join(part for part in parts if part).strip()
 
     if isinstance(content, dict):
-        if content.get("type") == Constants.CONTENT_TEXT and isinstance(content.get("text"), str):
+        content_type = content.get("type")
+        if content_type == Constants.CONTENT_TEXT and isinstance(content.get("text"), str):
             text_value = content.get("text")
             return text_value if isinstance(text_value, str) else ""
-        if content.get("type") == Constants.CONTENT_DOCUMENT:
+        if content_type == Constants.CONTENT_DOCUMENT:
             return convert_document_dict_to_text(content)
-        if content.get("type") == Constants.CONTENT_IMAGE:
+        if content_type == Constants.CONTENT_IMAGE:
             return "[image content omitted]"
         return json.dumps(content, ensure_ascii=False)
 
@@ -234,36 +324,57 @@ def convert_document_block_to_text(block: ClaudeContentBlockDocument) -> str:
         text = f"[document {block.source.media_type} base64 data omitted]"
     elif block.source.type == "url":
         text = f"[document url: {block.source.url}]"
-    else:
+    elif block.source.type == "file":
         text = f"[document file_id: {block.source.file_id}]"
+    else:
+        text = "[document content omitted]"
 
-    metadata = " | ".join(part for part in [block.title, block.context] if part)
-    if metadata:
-        return f"{metadata}\n{text}"
+    metadata_parts = [part for part in [block.title, block.context] if part]
+    if metadata_parts:
+        return f"{' | '.join(metadata_parts)}\n{text}"
     return text
 
 
 def convert_document_dict_to_text(document_block: Dict[str, Any]) -> str:
-    source = document_block.get("source")
+    source_data = document_block.get("source")
     text = ""
-    if isinstance(source, dict):
-        source_type = source.get("type")
-        if source_type == "text" and isinstance(source.get("text"), str):
-            text = source["text"]
-        elif source_type == "base64":
-            media_type = source.get("media_type") or "application/octet-stream"
-            text = f"[document {media_type} base64 data omitted]"
-        elif source_type == "url" and isinstance(source.get("url"), str):
-            text = f"[document url: {source['url']}]"
-        elif source_type == "file" and isinstance(source.get("file_id"), str):
-            text = f"[document file_id: {source['file_id']}]"
 
-    metadata = " | ".join(
-        value for value in [document_block.get("title"), document_block.get("context")] if value
-    )
-    if metadata and text:
-        return f"{metadata}\n{text}"
-    return metadata or text
+    if isinstance(source_data, dict):
+        source_type = source_data.get("type")
+        if source_type == "text":
+            text_value = source_data.get("text")
+            text = text_value if isinstance(text_value, str) else ""
+        elif source_type == "base64":
+            media_type = source_data.get("media_type")
+            media_value = media_type if isinstance(media_type, str) else "application/octet-stream"
+            text = f"[document {media_value} base64 data omitted]"
+        elif source_type == "url":
+            source_url = source_data.get("url")
+            text = f"[document url: {source_url}]" if isinstance(source_url, str) else "[document]"
+        elif source_type == "file":
+            file_id = source_data.get("file_id")
+            text = f"[document file_id: {file_id}]" if isinstance(file_id, str) else "[document]"
+
+    metadata_parts = [
+        part for part in [document_block.get("title"), document_block.get("context")] if part
+    ]
+    if metadata_parts and text:
+        return f"{' | '.join(metadata_parts)}\n{text}"
+    if metadata_parts:
+        return " | ".join(str(part) for part in metadata_parts)
+    return text
+
+
+def convert_image_block_to_responses_input(block: ClaudeContentBlockImage) -> Dict[str, Any]:
+    source = block.source
+    if source.type == "base64":
+        return {
+            "type": "input_image",
+            "image_url": f"data:{source.media_type};base64,{source.data}",
+        }
+    if source.type == "url":
+        return {"type": "input_image", "image_url": source.url}
+    raise ValueError(f"Unsupported image source type for conversion: {source.type}")
 
 
 def convert_system_content(
@@ -276,48 +387,84 @@ def convert_system_content(
     return "\n\n".join(block.text.strip() for block in system_content if block.text.strip())
 
 
-def convert_tool_definition(tool: ClaudeTool) -> Dict[str, Any]:
+def convert_function_tool_definition(tool: ClaudeTool) -> Dict[str, Any]:
     if isinstance(tool, ClaudeFunctionTool):
-        function: Dict[str, Any] = {
+        responses_tool: Dict[str, Any] = {
+            "type": Constants.TOOL_FUNCTION,
             "name": tool.name,
             "parameters": tool.input_schema,
         }
         if tool.description:
-            function["description"] = tool.description
-        return {"type": Constants.TOOL_FUNCTION, "function": function}
+            responses_tool["description"] = tool.description
+        return responses_tool
 
     if isinstance(tool, ClaudeWebSearchTool):
-        raise ValueError("Native web_search tools are not supported for /v1/messages.")
+        raise ValueError("Native web_search tool variants are not supported.")
 
     raise ValueError("Unsupported tool definition for conversion")
 
 
-def convert_tool_choice(tool_choice: Any) -> Tuple[Any, Optional[bool]]:
-    parallel_tool_calls: Optional[bool] = None
-
-    if isinstance(tool_choice, ClaudeToolChoiceAuto):
-        tool_choice_value: Any = "auto"
-    elif isinstance(tool_choice, ClaudeToolChoiceAny):
-        tool_choice_value = "required"
-    elif isinstance(tool_choice, ClaudeToolChoiceNone):
-        tool_choice_value = "none"
-    elif isinstance(tool_choice, ClaudeToolChoiceTool):
-        tool_choice_value = {
-            "type": Constants.TOOL_FUNCTION,
-            "function": {"name": tool_choice.name},
-        }
-    else:
-        raise ValueError("Unsupported tool_choice value for conversion")
-
-    if getattr(tool_choice, "disable_parallel_tool_use", None) is not None:
-        parallel_tool_calls = not bool(tool_choice.disable_parallel_tool_use)
-
-    return tool_choice_value, parallel_tool_calls
-
-
 def _as_user_content_block(block: ClaudeMessageContentBlock) -> UserContentBlock:
     if isinstance(
-        block, (ClaudeContentBlockDocument, ClaudeContentBlockImage, ClaudeContentBlockText)
+        block,
+        (
+            ClaudeContentBlockText,
+            ClaudeContentBlockImage,
+            ClaudeContentBlockDocument,
+        ),
     ):
         return block
     raise ValueError(f"Unsupported user content block type for conversion: {block.type}")
+
+
+def resolve_reasoning_config(
+    *,
+    output_config: Optional[Dict[str, Any]],
+    thinking: Optional[Dict[str, Any]],
+) -> Optional[Dict[str, Any]]:
+    effort = resolve_reasoning_effort(output_config=output_config, thinking=thinking)
+    if effort is None:
+        return None
+    return {"effort": effort}
+
+
+def resolve_reasoning_effort(
+    *,
+    output_config: Optional[Dict[str, Any]],
+    thinking: Optional[Dict[str, Any]],
+) -> Optional[str]:
+    if isinstance(output_config, dict):
+        output_effort = map_output_effort_to_openai_reasoning_effort(output_config.get("effort"))
+        if output_effort is not None:
+            return output_effort
+
+    if not isinstance(thinking, dict):
+        return None
+
+    thinking_type = thinking.get("type")
+    if thinking_type in {"adaptive", "disabled"}:
+        return None
+    if thinking_type != "enabled":
+        return None
+
+    return map_thinking_budget_to_reasoning_effort(thinking.get("budget_tokens"))
+
+
+def map_output_effort_to_openai_reasoning_effort(effort: Any) -> Optional[str]:
+    if effort == "low":
+        return "medium"
+    if effort == "medium":
+        return "high"
+    if effort in {"high", "max"}:
+        return "xhigh"
+    return None
+
+
+def map_thinking_budget_to_reasoning_effort(budget_tokens: Any) -> Optional[str]:
+    if not isinstance(budget_tokens, int):
+        return None
+    if budget_tokens < 1024:
+        return "medium"
+    if budget_tokens < 4096:
+        return "high"
+    return "xhigh"

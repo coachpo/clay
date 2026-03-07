@@ -7,10 +7,10 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import ValidationError
 
-from app.conversion.request_converter import build_completion_request
+from app.conversion.request_converter import build_responses_request
 from app.conversion.response_converter import (
-    convert_openai_streaming_to_claude,
-    convert_openai_to_claude_response,
+    convert_responses_stream_to_claude,
+    convert_responses_to_claude_response,
     sse,
 )
 from app.core.config import config
@@ -29,6 +29,12 @@ litellm.drop_params = True
 
 def _request_id_headers(request_id: str) -> Dict[str, str]:
     return {"request-id": request_id, "x-request-id": request_id}
+
+
+def _safe_model_dump(value: Any) -> Any:
+    if hasattr(value, "model_dump"):
+        return value.model_dump(mode="json", warnings=False)
+    return value
 
 
 def _anthropic_error_response(
@@ -152,12 +158,12 @@ async def create_message(
     try:
         api_key = config.ensure_openai_api_key()
         claude_request = await _parse_claude_messages_request(request)
-        completion_request = build_completion_request(
+        responses_request = build_responses_request(
             claude_request,
             model_mapper,
             api_key=api_key,
+            api_base=config.openai_base_url,
             max_tokens_limit=config.max_tokens_limit,
-            request_id=request_id,
             timeout=config.request_timeout,
         )
 
@@ -165,8 +171,8 @@ async def create_message(
 
             async def event_generator() -> Any:
                 try:
-                    stream = await litellm.acompletion(**completion_request)
-                    async for event in convert_openai_streaming_to_claude(
+                    stream = await litellm.aresponses(**responses_request)
+                    async for event in convert_responses_stream_to_claude(
                         stream,
                         claude_request,
                         request=request,
@@ -189,9 +195,9 @@ async def create_message(
                 },
             )
 
-        response = await litellm.acompletion(**completion_request)
-        response_dict = response.model_dump() if hasattr(response, "model_dump") else response
-        claude_response = convert_openai_to_claude_response(response_dict, claude_request)
+        response = await litellm.aresponses(**responses_request)
+        response_dict = _safe_model_dump(response)
+        claude_response = convert_responses_to_claude_response(response_dict, claude_request)
         return JSONResponse(content=claude_response, headers=_request_id_headers(request_id))
     except HTTPException:
         raise

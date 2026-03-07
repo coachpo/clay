@@ -12,6 +12,7 @@ def _env_flag(name: str, default: bool = False) -> bool:
 class Config:
     def __init__(self) -> None:
         self.openai_api_key = os.environ.get("OPENAI_API_KEY")
+        self.openai_base_url = os.environ.get("OPENAI_BASE_URL")
         self.anthropic_api_key = os.environ.get("ANTHROPIC_API_KEY")
 
         self.host = os.environ.get("HOST", "0.0.0.0")
