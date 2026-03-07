@@ -1,6 +1,5 @@
 import sys
 import uuid
-from typing import Any
 
 import uvicorn
 from fastapi import FastAPI, HTTPException, Request
@@ -10,7 +9,7 @@ from fastapi.responses import JSONResponse
 from app.api.endpoints import router as api_router
 from app.core.config import config
 
-app = FastAPI(title="Clay API Proxy", version="1.0.0")
+app = FastAPI(title="Clay API Proxy (LiteLLM)", version="2.0.0")
 app.include_router(api_router)
 
 
@@ -22,49 +21,19 @@ def _is_anthropic_path(path: str) -> bool:
     return path.startswith("/v1/messages")
 
 
-def _is_openai_path(path: str) -> bool:
-    return path.startswith("/v1/models")
-
-
-def _extract_request_id(detail: object) -> str:
-    if isinstance(detail, dict):
-        request_id = detail.get("request_id")
-        if isinstance(request_id, str) and request_id:
-            return request_id
-    return str(uuid.uuid4())
-
-
 @app.exception_handler(HTTPException)
-async def anthropic_http_exception_handler(request: Request, exc: HTTPException) -> JSONResponse:
-    request_id = _extract_request_id(exc.detail)
-    path = request.url.path
+async def http_exception_handler(request: Request, exc: HTTPException) -> JSONResponse:
+    request_id = str(uuid.uuid4())
+    if isinstance(exc.detail, dict) and "request_id" in exc.detail:
+        request_id = exc.detail["request_id"]
 
-    if _is_openai_path(path):
-        openai_payload: dict[str, Any]
-        if isinstance(exc.detail, dict) and "error" in exc.detail:
-            openai_payload = exc.detail
-        else:
-            openai_payload = {
-                "error": {
-                    "message": str(exc.detail),
-                    "type": "invalid_request_error" if exc.status_code < 500 else "server_error",
-                    "param": None,
-                    "code": None,
-                }
-            }
-        return JSONResponse(
-            status_code=exc.status_code,
-            content=openai_payload,
-            headers=_request_id_headers(request_id),
-        )
-
-    if _is_anthropic_path(path):
-        anthropic_payload: dict[str, Any]
+    if _is_anthropic_path(request.url.path):
+        # Anthropic error format
         if isinstance(exc.detail, dict) and exc.detail.get("type") == "error":
-            anthropic_payload = dict(exc.detail)
-            anthropic_payload.setdefault("request_id", request_id)
+            payload = dict(exc.detail)
+            payload.setdefault("request_id", request_id)
         else:
-            anthropic_payload = {
+            payload = {
                 "type": "error",
                 "error": {
                     "type": "invalid_request_error" if exc.status_code < 500 else "api_error",
@@ -74,10 +43,11 @@ async def anthropic_http_exception_handler(request: Request, exc: HTTPException)
             }
         return JSONResponse(
             status_code=exc.status_code,
-            content=anthropic_payload,
+            content=payload,
             headers=_request_id_headers(request_id),
         )
 
+    # Generic error format
     if isinstance(exc.detail, dict):
         return JSONResponse(status_code=exc.status_code, content=exc.detail)
     return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
@@ -87,23 +57,8 @@ async def anthropic_http_exception_handler(request: Request, exc: HTTPException)
 async def validation_exception_handler(request: Request, _: RequestValidationError) -> JSONResponse:
     request_id = str(uuid.uuid4())
     message = "Invalid request body"
-    path = request.url.path
 
-    if _is_openai_path(path):
-        return JSONResponse(
-            status_code=400,
-            content={
-                "error": {
-                    "message": message,
-                    "type": "invalid_request_error",
-                    "param": None,
-                    "code": "validation_error",
-                }
-            },
-            headers=_request_id_headers(request_id),
-        )
-
-    if _is_anthropic_path(path):
+    if _is_anthropic_path(request.url.path):
         return JSONResponse(
             status_code=400,
             content={
@@ -122,7 +77,7 @@ async def validation_exception_handler(request: Request, _: RequestValidationErr
 
 def main() -> None:
     if len(sys.argv) > 1 and sys.argv[1] == "--help":
-        print("Clay API Proxy v1.0.0")
+        print("Clay API Proxy v2.0.0 (LiteLLM)")
         print("")
         print("Usage: clay")
         print("")
@@ -132,7 +87,6 @@ def main() -> None:
         print("Optional environment variables:")
         print("  ANTHROPIC_API_KEY - Expected Anthropic API key for client validation")
         print("                      If set, clients must provide this exact API key")
-        print("  OPENAI_BASE_URL - OpenAI API base URL " "(default: https://api.openai.com/v1)")
         print("  BIG_MODEL - Model for opus requests (default: gpt-4o)")
         print("  MIDDLE_MODEL - Model for sonnet requests (default: gpt-4o)")
         print("  SMALL_MODEL - Model for haiku requests (default: gpt-4o-mini)")
@@ -141,17 +95,18 @@ def main() -> None:
         print("  LOG_LEVEL - Logging level (default: INFO)")
         print("  UVICORN_WORKERS - Uvicorn worker process count (default: 1)")
         print("  MAX_TOKENS_LIMIT - Token limit (default: 4096)")
-        print("  MIN_TOKENS_LIMIT - Minimum token limit (default: 100)")
         print("  REQUEST_TIMEOUT - Request timeout in seconds (default: 90)")
         print("")
         print("Model mapping:")
         print(f"  Claude haiku models -> {config.small_model}")
-        print(f"  Claude sonnet/opus models -> {config.big_model}")
+        print(f"  Claude sonnet models -> {config.middle_model}")
+        print(f"  Claude opus models -> {config.big_model}")
         sys.exit(0)
 
-    print("Clay API Proxy v1.0.0")
+    config.ensure_openai_api_key()
+
+    print("Clay API Proxy v2.0.0 (LiteLLM)")
     print("Configuration loaded successfully")
-    print(f"   OpenAI Base URL: {config.openai_base_url}")
     print(f"   Big Model (opus): {config.big_model}")
     print(f"   Middle Model (sonnet): {config.middle_model}")
     print(f"   Small Model (haiku): {config.small_model}")
@@ -159,9 +114,7 @@ def main() -> None:
     print(f"   Request Timeout: {config.request_timeout}s")
     print(f"   Uvicorn Workers: {config.uvicorn_workers}")
     print(f"   Server: {config.host}:{config.port}")
-    print(
-        "   Client API Key Validation: " f"{'Enabled' if config.anthropic_api_key else 'Disabled'}"
-    )
+    print(f"   Client API Key Validation: {'Enabled' if config.anthropic_api_key else 'Disabled'}")
     print("")
 
     log_level = config.log_level.split()[0].lower()

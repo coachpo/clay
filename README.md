@@ -1,60 +1,31 @@
 # Clay
 
-Clay is a FastAPI proxy that exposes Anthropic-style generation endpoints and forwards them to OpenAI-compatible Responses providers.
+Clay is a FastAPI proxy that uses LiteLLM to translate between Anthropic Messages API format and OpenAI-compatible providers.
 
-It provides:
-- Anthropic-compatible generation routes:
-  - `POST /v1/messages`
-  - `POST /v1/messages/count_tokens`
-- OpenAI-compatible model discovery routes:
-  - `GET /v1/models`
-  - `GET /v1/models/{model_id}`
+## Features
 
-## Key behavior
+- **Anthropic Messages API compatibility**: Accept requests in Anthropic format
+- **LiteLLM-powered routing**: Uses LiteLLM for provider access and OpenAI-compatible responses
+- **Thin compatibility adapters**: Converts Anthropic requests and responses at the proxy edge
+- **Streaming support**: Full SSE streaming for real-time responses
+- **Model mapping**: Flexible Claude model → OpenAI model mapping
+- **Simple configuration**: Minimal environment variables required
 
-- Request/response contract bridging between Anthropic Messages and OpenAI Responses.
-- Claude-style SSE event shape/order for streaming responses.
-- Request-scoped cancellation support.
-- `request-id` and `x-request-id` parity headers on success and errors.
-- Optional retry fallback that strips optional fields (`metadata`, `context_management`, `extra_body`) when upstreams reject them or return retryable/protocol failures.
-- Sampling policy: `temperature` and `top_p` are accepted for Anthropic compatibility but always ignored (not forwarded upstream).
+## Architecture
 
-## Reasoning effort mapping
+Clay v2.0 is a complete rewrite using LiteLLM Python SDK:
 
-Clay resolves OpenAI `reasoning.effort` from Anthropic fields in this order:
-
-1. `output_config.effort` (if present and recognized)
-2. otherwise `thinking`
-3. otherwise omit `reasoning` entirely
-
-Mappings currently implemented:
-
-- `output_config.effort`:
-  - `low` -> `medium`
-  - `medium` -> `high`
-  - `high` -> `xhigh`
-  - `max` -> `xhigh`
-- `thinking.type`:
-  - `disabled` -> omit `reasoning`
-  - `adaptive` -> omit `reasoning`
-  - `enabled` with `budget_tokens`:
-    - `< 1024` -> `medium`
-    - `< 4096` -> `high`
-    - `>= 4096` -> `xhigh`
-  - `enabled` without `budget_tokens` -> omit `reasoning`
-
-When omitted, Clay does not send `reasoning` in the upstream payload. Effective default behavior is then determined by the upstream model/provider.
-
-Reference implementation and tests:
-- `app/conversion/request_converter.py` (`_resolve_reasoning_effort`, `_map_output_effort_to_openai_reasoning_effort`, `_map_thinking_budget_to_reasoning_effort`)
-- `tests/test_main.py` (reasoning mapping coverage)
+- **LiteLLM handles transport**: Provider access, retries, and OpenAI-compatible responses
+- **Clay handles Anthropic compatibility**: Lightweight request/response conversion around LiteLLM
+- **Simplified codebase**: Substantially reduced complexity from v1.x
+- **Production-ready**: Built on battle-tested LiteLLM library
 
 ## Requirements
 
 - Python `>=3.13`
-- A valid `OPENAI_API_KEY`
+- `OPENAI_API_KEY` environment variable
 
-## Quick start
+## Quick Start
 
 1. Install dependencies:
 
@@ -72,11 +43,9 @@ cp .env.example .env
 Set at least:
 - `OPENAI_API_KEY`
 
-Optional but common:
+Optional:
 - `ANTHROPIC_API_KEY` (enforce client key validation)
-- `OPENAI_BASE_URL` (for OpenAI-compatible upstreams)
-- `BIG_MODEL`, `MIDDLE_MODEL`, `SMALL_MODEL`
-- `OPENAI_RESPONSES_STATE_MODE` (`stateless` or `provider`)
+- `BIG_MODEL`, `MIDDLE_MODEL`, `SMALL_MODEL` (model mapping)
 
 3. Run:
 
@@ -90,59 +59,72 @@ Or:
 python -m app.main
 ```
 
-## Minimal request example
+## API Endpoints
+
+### Anthropic Messages API
+
+```bash
+POST /v1/messages
+```
+
+Accepts Anthropic Messages API format, maps the Claude model to a configured OpenAI-compatible model, and forwards the request through LiteLLM.
+
+Example:
 
 ```bash
 curl http://localhost:8000/v1/messages \
   -H "content-type: application/json" \
-  -H "x-api-key: your-expected-anthropic-api-key" \
+  -H "x-api-key: your-anthropic-api-key" \
   -H "anthropic-version: 2023-06-01" \
   -d '{
-    "model": "claude-opus-4-6",
+    "model": "claude-3-5-sonnet-20241022",
     "max_tokens": 256,
     "messages": [{"role": "user", "content": "Hello"}]
   }'
 ```
 
-## Environment variables
+### Utility Endpoints
 
-Required:
-- `OPENAI_API_KEY`
+- `GET /health` - Health check
+- `GET /` - Service info
 
-Core runtime:
-- `OPENAI_BASE_URL` (default: `https://api.openai.com/v1`)
-- `AZURE_API_VERSION` (optional, for Azure-style base URLs)
-- `HOST` (default: `0.0.0.0`)
-- `PORT` (default: `8000`)
-- `LOG_LEVEL` (default: `INFO`)
-- `UVICORN_WORKERS` (default: `1`)
-- `REQUEST_TIMEOUT` (default: `90`)
-- `MAX_RETRIES` (default: `2`)
+## Environment Variables
 
-Model routing:
-- `BIG_MODEL`
-- `MIDDLE_MODEL` (defaults to `BIG_MODEL` when unset)
-- `SMALL_MODEL`
+### Required
 
-Anthropic contract controls:
-- `ANTHROPIC_API_KEY`
-- `ANTHROPIC_DEFAULT_VERSION` (default: `2023-06-01`)
-- `ANTHROPIC_SUPPORTED_VERSIONS` (CSV list)
-- `ANTHROPIC_ALLOW_VERSION_FALLBACK`
-- `ANTHROPIC_ALLOW_MISSING_VERSION`
-- `ANTHROPIC_ALLOW_UNKNOWN_FIELDS`
-- `ANTHROPIC_COMPATIBILITY_MODE`
+- `OPENAI_API_KEY` - Your OpenAI API key (used by LiteLLM)
 
-Compatibility metadata passthrough:
-- `ALLOW_OPENAI_EXTENSION_PASSTHROUGH`
-- `INCLUDE_ORIGINAL_ANTHROPIC_REQUEST`
+### Optional
 
-State mode:
-- `OPENAI_RESPONSES_STATE_MODE`:
-  - `stateless` (default)
-  - `provider`
+- `ANTHROPIC_API_KEY` - Expected client API key for validation
+- `BIG_MODEL` - Model for opus requests (default: `gpt-4o`)
+- `MIDDLE_MODEL` - Model for sonnet requests (default: `gpt-4o`)
+- `SMALL_MODEL` - Model for haiku requests (default: `gpt-4o-mini`)
+- `HOST` - Server host (default: `0.0.0.0`)
+- `PORT` - Server port (default: `8000`)
+- `LOG_LEVEL` - Logging level (default: `INFO`)
+- `UVICORN_WORKERS` - Worker process count (default: `1`)
+- `MAX_TOKENS_LIMIT` - Token limit (default: `4096`)
+- `REQUEST_TIMEOUT` - Request timeout in seconds (default: `90`)
 
-## Quality checks
+## Model Mapping
+
+Clay maps Claude model names to OpenAI models:
+
+- Models containing `haiku` → `SMALL_MODEL`
+- Models containing `sonnet` → `MIDDLE_MODEL`
+- Models containing `opus` → `BIG_MODEL`
+- Pass-through prefixes: `gpt-`, `o1-`, `o3-`, `o4-`, `gpt-5`, `ep-`, `doubao-`, `deepseek-`
+
+## Testing
+
+Run contract tests:
+
+```bash
+pytest tests/test_main.py
+```
+
+Quality checks:
 
 ```bash
 isort --check-only app tests
@@ -151,13 +133,25 @@ ruff check app tests
 mypy app
 ```
 
-Integration harness:
+## Migration from v1.x
 
-```bash
-python tests/test_main.py
-```
+Clay v2.0 is a breaking rewrite:
 
-## Notes
+- **Removed**: OpenAI Responses API support
+- **Removed**: Heavy custom client/retry stack
+- **Simplified**: Anthropic compatibility layer
+- **Simplified**: Configuration (fewer environment variables)
+- **Simplified**: Codebase footprint relative to v1.x
 
-- `POST /v1/chat/completions` and `POST /v1/responses` are intentionally removed from proxy surface and return 404.
-- This repo's canonical behavior checks are centered in `tests/test_main.py`.
+## How It Works
+
+1. Client sends Anthropic Messages API request
+2. Clay validates API key and headers
+3. Clay converts the request into OpenAI-compatible chat completion parameters
+4. LiteLLM forwards the request to the mapped provider model
+5. Clay converts the LiteLLM response back to Anthropic format
+6. Clay returns Anthropic-compatible JSON or SSE events
+
+## License
+
+MIT

@@ -1,35 +1,31 @@
 from __future__ import annotations
 
-from typing import Annotated, Any, Dict, List, Literal, Optional, Type, Union
+from typing import Annotated, Any, Dict, List, Literal, Optional, Union
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
-class StrictBaseModel(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-
-class ForwardCompatBaseModel(BaseModel):
+class ClaudeBaseModel(BaseModel):
     model_config = ConfigDict(extra="allow")
 
 
-class ClaudeCacheControl(StrictBaseModel):
+class ClaudeCacheControl(ClaudeBaseModel):
     type: Literal["ephemeral"]
 
 
-class ClaudeContentBlockText(StrictBaseModel):
+class ClaudeContentBlockText(ClaudeBaseModel):
     type: Literal["text"]
     text: str
     cache_control: Optional[ClaudeCacheControl] = None
 
 
-class ClaudeImageSourceBase64(StrictBaseModel):
+class ClaudeImageSourceBase64(ClaudeBaseModel):
     type: Literal["base64"]
     media_type: Literal["image/jpeg", "image/png", "image/gif", "image/webp"]
     data: str
 
 
-class ClaudeImageSourceURL(StrictBaseModel):
+class ClaudeImageSourceURL(ClaudeBaseModel):
     type: Literal["url"]
     url: str
 
@@ -40,45 +36,45 @@ ClaudeImageSource = Annotated[
 ]
 
 
-class ClaudeContentBlockImage(StrictBaseModel):
+class ClaudeContentBlockImage(ClaudeBaseModel):
     type: Literal["image"]
     source: ClaudeImageSource
     cache_control: Optional[ClaudeCacheControl] = None
 
 
-class ClaudeDocumentSourceBase64(StrictBaseModel):
+class ClaudeDocumentSourceBase64(ClaudeBaseModel):
     type: Literal["base64"]
     media_type: str
     data: str
 
 
-class ClaudeDocumentSourceText(StrictBaseModel):
+class ClaudeDocumentSourceFile(ClaudeBaseModel):
+    type: Literal["file"]
+    file_id: str
+
+
+class ClaudeDocumentSourceText(ClaudeBaseModel):
     type: Literal["text"]
     text: str
 
 
-class ClaudeDocumentSourceURL(StrictBaseModel):
+class ClaudeDocumentSourceURL(ClaudeBaseModel):
     type: Literal["url"]
     url: str
-
-
-class ClaudeDocumentSourceFile(StrictBaseModel):
-    type: Literal["file"]
-    file_id: str
 
 
 ClaudeDocumentSource = Annotated[
     Union[
         ClaudeDocumentSourceBase64,
+        ClaudeDocumentSourceFile,
         ClaudeDocumentSourceText,
         ClaudeDocumentSourceURL,
-        ClaudeDocumentSourceFile,
     ],
     Field(discriminator="type"),
 ]
 
 
-class ClaudeContentBlockDocument(StrictBaseModel):
+class ClaudeContentBlockDocument(ClaudeBaseModel):
     type: Literal["document"]
     source: ClaudeDocumentSource
     title: Optional[str] = None
@@ -86,7 +82,18 @@ class ClaudeContentBlockDocument(StrictBaseModel):
     cache_control: Optional[ClaudeCacheControl] = None
 
 
-class ClaudeContentBlockToolUse(StrictBaseModel):
+class ClaudeContentBlockThinking(ClaudeBaseModel):
+    type: Literal["thinking"]
+    thinking: str
+    signature: str = ""
+
+
+class ClaudeContentBlockRedactedThinking(ClaudeBaseModel):
+    type: Literal["redacted_thinking"]
+    data: str
+
+
+class ClaudeContentBlockToolUse(ClaudeBaseModel):
     type: Literal["tool_use"]
     id: str
     name: str
@@ -100,7 +107,7 @@ ToolResultContentBlock = Annotated[
 ]
 
 
-class ClaudeContentBlockToolResult(StrictBaseModel):
+class ClaudeContentBlockToolResult(ClaudeBaseModel):
     type: Literal["tool_result"]
     tool_use_id: str
     content: Union[str, List[ToolResultContentBlock]]
@@ -108,18 +115,7 @@ class ClaudeContentBlockToolResult(StrictBaseModel):
     cache_control: Optional[ClaudeCacheControl] = None
 
 
-class ClaudeContentBlockThinking(StrictBaseModel):
-    type: Literal["thinking"]
-    thinking: str
-    signature: str
-
-
-class ClaudeContentBlockRedactedThinking(StrictBaseModel):
-    type: Literal["redacted_thinking"]
-    data: str
-
-
-class ClaudeSystemContent(StrictBaseModel):
+class ClaudeSystemContent(ClaudeBaseModel):
     type: Literal["text"]
     text: str
     cache_control: Optional[ClaudeCacheControl] = None
@@ -127,20 +123,20 @@ class ClaudeSystemContent(StrictBaseModel):
 
 ClaudeMessageContentBlock = Annotated[
     Union[
-        ClaudeContentBlockText,
-        ClaudeContentBlockImage,
         ClaudeContentBlockDocument,
-        ClaudeContentBlockToolUse,
-        ClaudeContentBlockToolResult,
-        ClaudeContentBlockThinking,
+        ClaudeContentBlockImage,
         ClaudeContentBlockRedactedThinking,
+        ClaudeContentBlockText,
+        ClaudeContentBlockThinking,
+        ClaudeContentBlockToolResult,
+        ClaudeContentBlockToolUse,
     ],
     Field(discriminator="type"),
 ]
 
 
-class ClaudeMessage(StrictBaseModel):
-    role: Literal["user", "assistant"]
+class ClaudeMessage(ClaudeBaseModel):
+    role: Literal["assistant", "user"]
     content: Union[str, List[ClaudeMessageContentBlock]]
 
     @model_validator(mode="after")
@@ -148,8 +144,8 @@ class ClaudeMessage(StrictBaseModel):
         if isinstance(self.content, str):
             return self
 
-        user_allowed = {"text", "image", "document", "tool_result"}
-        assistant_allowed = {"text", "tool_use", "thinking", "redacted_thinking"}
+        user_allowed = {"document", "image", "text", "tool_result"}
+        assistant_allowed = {"redacted_thinking", "text", "thinking", "tool_use"}
         allowed_types = user_allowed if self.role == "user" else assistant_allowed
 
         for block in self.content:
@@ -160,196 +156,74 @@ class ClaudeMessage(StrictBaseModel):
         return self
 
 
-class ClaudeFunctionTool(StrictBaseModel):
+class ClaudeFunctionTool(ClaudeBaseModel):
     name: str
     description: Optional[str] = None
     input_schema: Dict[str, Any]
-    input_examples: Optional[List[Dict[str, Any]]] = None
 
 
-class ClaudeWebSearchUserLocation(StrictBaseModel):
-    type: Literal["approximate"]
-    city: Optional[str] = None
-    region: Optional[str] = None
-    country: Optional[str] = None
-    timezone: Optional[str] = None
-
-
-class ClaudeWebSearchTool(StrictBaseModel):
+class ClaudeWebSearchTool(ClaudeBaseModel):
     type: str = Field(pattern=r"^web_search(_\d{8})?$")
     name: Literal["web_search"]
-    max_uses: Optional[int] = Field(default=None, ge=1)
-    allowed_domains: Optional[List[str]] = None
-    blocked_domains: Optional[List[str]] = None
-    user_location: Optional[ClaudeWebSearchUserLocation] = None
-    cache_control: Optional[ClaudeCacheControl] = None
-
-    @model_validator(mode="after")
-    def validate_domain_filters(self) -> "ClaudeWebSearchTool":
-        if self.allowed_domains and self.blocked_domains:
-            raise ValueError("web_search tool cannot set both allowed_domains and blocked_domains")
-        return self
 
 
 ClaudeTool = Union[ClaudeFunctionTool, ClaudeWebSearchTool]
 
 
-class ClaudeMetadata(StrictBaseModel):
-    user_id: Optional[str] = None
-
-
-class ClaudeOutputConfig(StrictBaseModel):
-    effort: Optional[Literal["low", "medium", "high", "max"]] = None
-
-
-class ClaudeThinkingTurnsKeep(StrictBaseModel):
-    type: Literal["thinking_turns"]
-    value: int = Field(ge=1)
-
-
-class ClaudeContextEditClearThinking(StrictBaseModel):
-    type: Literal["clear_thinking_20251015"]
-    keep: Optional[Union[Literal["all"], ClaudeThinkingTurnsKeep]] = None
-
-
-class ClaudeContextEditClearToolUses(StrictBaseModel):
-    type: Literal["clear_tool_uses_20250919"]
-
-
-ClaudeContextEdit = Annotated[
-    Union[ClaudeContextEditClearThinking, ClaudeContextEditClearToolUses],
-    Field(discriminator="type"),
-]
-
-
-class ClaudeContextManagement(StrictBaseModel):
-    edits: List[ClaudeContextEdit] = Field(min_length=1)
-
-    @model_validator(mode="after")
-    def validate_edit_order(self) -> "ClaudeContextManagement":
-        if len(self.edits) > 1 and self.edits[0].type != "clear_thinking_20251015":
-            raise ValueError(
-                "clear_thinking_20251015 must be the first context_management edit when combining edits"
-            )
-        return self
-
-
-class ClaudeThinkingConfig(StrictBaseModel):
-    type: Literal["enabled", "disabled", "adaptive"]
-    budget_tokens: Optional[int] = Field(default=None, ge=1)
-
-    @model_validator(mode="after")
-    def validate_budget_tokens(self) -> "ClaudeThinkingConfig":
-        if self.type != "enabled" and self.budget_tokens is not None:
-            raise ValueError("budget_tokens is only valid when thinking.type is 'enabled'")
-        return self
-
-
-class ClaudeToolChoiceAuto(StrictBaseModel):
+class ClaudeToolChoiceAuto(ClaudeBaseModel):
     type: Literal["auto"]
     disable_parallel_tool_use: Optional[bool] = None
 
 
-class ClaudeToolChoiceAny(StrictBaseModel):
+class ClaudeToolChoiceAny(ClaudeBaseModel):
     type: Literal["any"]
     disable_parallel_tool_use: Optional[bool] = None
 
 
-class ClaudeToolChoiceTool(StrictBaseModel):
+class ClaudeToolChoiceNone(ClaudeBaseModel):
+    type: Literal["none"]
+
+
+class ClaudeToolChoiceTool(ClaudeBaseModel):
     type: Literal["tool"]
     name: str
     disable_parallel_tool_use: Optional[bool] = None
 
 
-class ClaudeToolChoiceNone(StrictBaseModel):
-    type: Literal["none"]
-
-
 ClaudeToolChoice = Annotated[
-    Union[ClaudeToolChoiceAuto, ClaudeToolChoiceAny, ClaudeToolChoiceTool, ClaudeToolChoiceNone],
+    Union[ClaudeToolChoiceAuto, ClaudeToolChoiceAny, ClaudeToolChoiceNone, ClaudeToolChoiceTool],
     Field(discriminator="type"),
 ]
 
 
-class _ClaudeMessagesRequestFields(BaseModel):
+class ClaudeMessagesRequest(ClaudeBaseModel):
     model: str
     max_tokens: int = Field(ge=1)
     messages: List[ClaudeMessage]
     system: Optional[Union[str, List[ClaudeSystemContent]]] = None
-    stop_sequences: Optional[List[str]] = None
     stream: bool = False
     temperature: Optional[float] = Field(default=None, ge=0.0, le=1.0)
     top_p: Optional[float] = Field(default=None, ge=0.0, le=1.0)
     top_k: Optional[int] = Field(default=None, ge=1)
-    output_config: Optional[ClaudeOutputConfig] = None
-    metadata: Optional[ClaudeMetadata] = None
+    stop_sequences: Optional[List[str]] = None
     tools: Optional[List[ClaudeTool]] = None
     tool_choice: Optional[ClaudeToolChoice] = None
-    thinking: Optional[ClaudeThinkingConfig] = None
+    metadata: Optional[Dict[str, Any]] = None
     service_tier: Optional[str] = None
+    output_config: Optional[Dict[str, Any]] = None
+    thinking: Optional[Dict[str, Any]] = None
+    context_management: Optional[Dict[str, Any]] = None
     inference_geo: Optional[Dict[str, Any]] = None
-    context_management: Optional[ClaudeContextManagement] = None
 
     @model_validator(mode="after")
-    def validate_tool_choice(self) -> "_ClaudeMessagesRequestFields":
+    def validate_tool_choice(self) -> "ClaudeMessagesRequest":
         if self.tool_choice and self.tool_choice.type != "none" and not self.tools:
             raise ValueError("tool_choice requires tools")
-        if self.thinking and self.tool_choice and self.tool_choice.type not in {"auto", "none"}:
-            raise ValueError("thinking supports only tool_choice 'auto' or 'none'")
         return self
 
 
-class ClaudeMessagesRequest(StrictBaseModel, _ClaudeMessagesRequestFields):
-    pass
+ClaudeMessagesRequestModel = ClaudeMessagesRequest
 
 
-class ClaudeMessagesRequestForwardCompat(ForwardCompatBaseModel, _ClaudeMessagesRequestFields):
-    pass
-
-
-class _ClaudeTokenCountRequestFields(BaseModel):
-    model: str
-    messages: List[ClaudeMessage]
-    system: Optional[Union[str, List[ClaudeSystemContent]]] = None
-    output_config: Optional[ClaudeOutputConfig] = None
-    tools: Optional[List[ClaudeTool]] = None
-    thinking: Optional[ClaudeThinkingConfig] = None
-    tool_choice: Optional[ClaudeToolChoice] = None
-    context_management: Optional[ClaudeContextManagement] = None
-
-
-class ClaudeTokenCountRequest(StrictBaseModel, _ClaudeTokenCountRequestFields):
-    pass
-
-
-class ClaudeTokenCountRequestForwardCompat(ForwardCompatBaseModel, _ClaudeTokenCountRequestFields):
-    pass
-
-
-ClaudeMessagesRequestModel = Union[ClaudeMessagesRequest, ClaudeMessagesRequestForwardCompat]
-ClaudeTokenCountRequestModel = Union[
-    ClaudeTokenCountRequest,
-    ClaudeTokenCountRequestForwardCompat,
-]
-
-
-def parse_claude_messages_request(
-    payload: Dict[str, Any], allow_unknown_fields: bool
-) -> ClaudeMessagesRequestModel:
-    model: Type[ClaudeMessagesRequestModel]
-    if allow_unknown_fields:
-        model = ClaudeMessagesRequestForwardCompat
-    else:
-        model = ClaudeMessagesRequest
-    return model.model_validate(payload)
-
-
-def parse_claude_token_count_request(
-    payload: Dict[str, Any], allow_unknown_fields: bool
-) -> ClaudeTokenCountRequestModel:
-    model: Type[ClaudeTokenCountRequestModel]
-    if allow_unknown_fields:
-        model = ClaudeTokenCountRequestForwardCompat
-    else:
-        model = ClaudeTokenCountRequest
-    return model.model_validate(payload)
+def parse_claude_messages_request(payload: Dict[str, Any]) -> ClaudeMessagesRequestModel:
+    return ClaudeMessagesRequest.model_validate(payload)
